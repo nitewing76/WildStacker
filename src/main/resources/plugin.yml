@@ -1,0 +1,96 @@
+name: WildStacker
+version: ${project.version}
+main: com.bgsoftware.wildstacker.WildStackerPlugin
+
+description: Stacking drops, entities, blocks and spawners into one object!
+website: https://bg-software.com/
+api-version: 1.13
+author: Ome_R
+
+# Custom section used by DependenciesManager, which replaces softdepend.
+class-depends:
+  - Arconix
+  - Boss
+  - Citizens
+  - ClearLag
+  - CMI
+  - CoreProtect
+  - CrazyEnchantments
+  - CustomBosses
+  - EpicBosses
+  - EpicSpawners
+  - Factions
+  - Holograms
+  - HolographicDisplays
+  - MassiveCore
+  - mcMMO
+  - MineableSpawners
+  - MyPet
+  - MythicMobs
+  - FactionsTop
+  - PlotSquared
+  - ProtocolLib
+  - ShopGUIPlus
+  - SilkSpawners
+  - Vault
+  - WildStackerEnchantsPatch
+  - WildTools
+  - WorldEdit
+  - WorldGuard
+
+loadbefore:
+  - ShopGUIPlus
+  - SuperiorSkyblock2
+  - Multiverse-Core
+
+commands:
+  stacker:
+    description: Main command for the plugin
+    aliases: [ wstacker, ws ]
+
+permissions:
+  wildstacker.*:
+    description: Gives access to all the command.
+    default: op
+    children:
+      wildstacker.give: true
+      wildstacker.info: true
+      wildstacker.kill: true
+      wildstacker.reload: true
+      wildstacker.save: true
+      wildstacker.silktouch: true
+      wildstacker.nosilkdrop: true
+      wildstacker.settings: true
+      wildstacker.place.*: true
+      wildstacker.nextplace: true
+      wildstacker.stats: true
+      wildstacker.toggle: true
+      wildstacker.charge.bypass: true
+  wildstacker.give:
+    description: Gives access to give spawner and eggs to players.
+  wildstacker.info:
+    description: Gives access to get information about a spawner.
+  wildstacker.kill:
+    description: Gives access to kill all stacked-entities.
+  wildstacker.reload:
+    description: Gives access to reload all configuration files.
+  wildstacker.silktouch:
+    description: Gives access to get spawners with silk-touch.
+  wildstacker.nosilkdrop:
+    description: Gives access to get spawners without silk-touch.
+  wildstacker.settings:
+    description: Gives access to use settings editor.
+  wildstacker.place.*:
+    description: Gives access to place all spawner types
+  wildstacker.stack.*:
+    description: Gives access to stack all spawner types
+    default: true
+  wildstacker.nextplace:
+    description: Gives access to place spawners next to others when the feature is disabled.
+  wildstacker.stats:
+    description: Gives access to get all stats about cached data.
+  wildstacker.toggle:
+    default: true
+    description: Gives access to use the toggle command if enabled.
+  wildstacker.charge.bypass:
+    description: Bypass charging for placing and breaking spawners

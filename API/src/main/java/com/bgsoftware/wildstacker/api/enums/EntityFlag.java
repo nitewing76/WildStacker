@@ -1,0 +1,38 @@
+package com.bgsoftware.wildstacker.api.enums;
+
+import org.bukkit.entity.Entity;
+
+public enum EntityFlag {
+
+    CORPSE(Boolean.class),
+    SPAWN_CAUSE(SpawnCause.class),
+    NAME_TAG(Boolean.class),
+    ORIGINAL_AMOUNT(Integer.class),
+    DEAD_ENTITY(Boolean.class),
+    DEMO_ENTITY(Boolean.class),
+    REMOVED_ENTITY(Boolean.class),
+    BREEDABLE_AMOUNT(Integer.class),
+    BYPASS_STACKING(Boolean.class),
+    EXP_TO_DROP(Integer.class),
+    AVOID_ONE_SHOT(Boolean.class),
+    ATTACKED_ENTITY(Boolean.class),
+    ADD_TO_VEHICLE(Boolean.class),
+    DELAY_STACK(Boolean.class),
+    CACHED_KILLER(Entity.class),
+    CACHED_SOURCE_KILLER(Entity.class),
+
+    // Items related flags
+    DROPPED_BY_PLAYER(Boolean.class),
+    RECENTLY_PICKED_UP(Boolean.class);
+
+    private final Class<?> valueClass;
+
+    EntityFlag(Class<?> valueClass) {
+        this.valueClass = valueClass;
+    }
+
+    public Class<?> getValueClass() {
+        return valueClass;
+    }
+
+}

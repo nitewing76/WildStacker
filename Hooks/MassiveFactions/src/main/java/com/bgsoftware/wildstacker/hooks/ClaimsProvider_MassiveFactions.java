@@ -1,0 +1,24 @@
+package com.bgsoftware.wildstacker.hooks;
+
+import com.bgsoftware.common.reflection.ReflectMethod;
+import com.massivecraft.factions.entity.BoardColl;
+import com.massivecraft.factions.entity.Faction;
+import com.massivecraft.factions.entity.MPlayer;
+import com.massivecraft.massivecore.ps.PS;
+import org.bukkit.Location;
+import org.bukkit.entity.Player;
+
+public final class ClaimsProvider_MassiveFactions implements ClaimsProvider {
+
+    private static final ReflectMethod<Boolean> USING_ADMIN_MODE = new ReflectMethod<>(MPlayer.class, "isUsingAdminMode");
+
+    private static final String WILDERNESS_ID = "none";
+
+    @Override
+    public boolean hasClaimAccess(Player player, Location location) {
+        MPlayer mPlayer = MPlayer.get(player);
+        boolean overriding = USING_ADMIN_MODE.isValid() ? USING_ADMIN_MODE.invoke(mPlayer) : mPlayer.isOverriding();
+        Faction faction = BoardColl.get().getFactionAt(PS.valueOf(location));
+        return faction.getId().equals(WILDERNESS_ID) || overriding || (mPlayer.hasFaction() && mPlayer.getFaction().equals(faction));
+    }
+}

@@ -2,115 +2,63 @@ package com.bgsoftware.wildstacker.api.enums;
 
 import org.bukkit.event.entity.CreatureSpawnEvent;
 
-import java.util.Arrays;
-import java.util.EnumMap;
-import java.util.Map;
-
 public enum SpawnCause {
 
-    /**
-     * Vanilla spawn causes.
-     */
-    BED(0),
-    BEEHIVE(1),
-    BREEDING(2),
-    BUILD_IRONGOLEM(3),
-    BUILD_SNOWMAN(4),
-    BUILD_WITHER(5),
-    CHUNK_GEN(6),
-    CURED(7),
-    CUSTOM(8),
-    DEFAULT(9),
-    DISPENSE_EGG(10),
-    DROWNED(11),
-    EGG(12),
-    ENDER_PEARL(13),
-    EXPLOSION(14),
-    INFECTION(15),
-    JOCKEY(16),
-    LIGHTNING(17),
-    MOUNT(18),
-    NATURAL(19),
-    NETHER_PORTAL(20),
-    OCELOT_BABY(21),
-    PATROL(22),
-    RAID(23),
-    REINFORCEMENTS(24),
-    SHEARED(25),
-    SHOULDER_ENTITY(26),
-    SILVERFISH_BLOCK(27),
-    SLIME_SPLIT(28),
-    SPAWNER(29),
-    SPAWNER_EGG(30),
-    TRAP(31),
-    VILLAGE_DEFENSE(32),
-    VILLAGE_INVASION(33),
-    COMMAND(34),
-    PIGLIN_ZOMBIFIED(35),
-    SPELL(36),
-    FROZEN(37),
-    METAMORPHOSIS(38),
-    DUPLICATION(39),
-    ENCHANTMENT(40),
-    TRIAL_SPAWNER(41),
-    BUILD_COPPERGOLEM(42),
-    POTION_EFFECT(43),
-    REANIMATE(44),
-    BUCKET(45),
-
-    /**
-     * Custom spawn causes.
-     */
-    MYTHIC_MOBS(101),
-    CUSTOM_BOSSES(102),
-    BOSS(103),
-    EPIC_BOSSES(104),
-    EPIC_BOSSES_MINION(105),
-    EPIC_SPAWNERS(106),
-    MY_PET(107),
-    ECHO_PET(108),
-    ELITE_BOSSES(109),
-    MORE_BOSSES(110),
-    MINIATURE_PETS(111),
-    CRAZY_ENCHANTMENTS(112);
-
-    private static final Map<CreatureSpawnEvent.SpawnReason, SpawnCause> BUKKIT_MAP = initializeBukkitMap();
-
-    private static Map<CreatureSpawnEvent.SpawnReason, SpawnCause> initializeBukkitMap() {
-        EnumMap<CreatureSpawnEvent.SpawnReason, SpawnCause> map = new EnumMap<>(CreatureSpawnEvent.SpawnReason.class);
-
-        for (CreatureSpawnEvent.SpawnReason spawnReason : CreatureSpawnEvent.SpawnReason.values()) {
-            try {
-                map.put(spawnReason, SpawnCause.valueOf(spawnReason.name()));
-            } catch (IllegalArgumentException ignored) {
-            }
-        }
-
-        return map;
-    }
-
-    private final int id;
-
-    SpawnCause(int id) {
-        this.id = id;
-    }
+    BEEHIVE,
+    BREEDING,
+    BUCKET,
+    BUILD_COPPERGOLEM,
+    BUILD_IRONGOLEM,
+    BUILD_SNOWMAN,
+    BUILD_WITHER,
+    CHUNK_GEN,
+    COMMAND,
+    CURED,
+    CURING,
+    CUSTOM,
+    DEFAULT,
+    DISPENSE_EGG,
+    DISMOUNT,
+    DROWNED,
+    DUPLICATION,
+    EGG,
+    ENCHANTMENT,
+    ENDER_PEARL,
+    EXPLOSION,
+    FROZEN,
+    INFECTION,
+    JOCKEY,
+    LIGHTNING,
+    METAMORPHOSIS,
+    MOUNT,
+    NATURAL,
+    NETHER_PORTAL,
+    OCELOT_BABY,
+    OMINOUS_ITEM_SPAWNER,
+    PATROL,
+    PIGLIN_ZOMBIFIED,
+    POTION_EFFECT,
+    RAID,
+    REANIMATE,
+    REINFORCEMENTS,
+    SHEARED,
+    SHOULDER_ENTITY,
+    SILVERFISH_BLOCK,
+    SLIME_SPLIT,
+    SPAWNER,
+    SPAWNER_EGG,
+    SPELL,
+    TRAP,
+    TRIAL_SPAWNER,
+    VILLAGE_DEFENSE,
+    VILLAGE_INVASION;
 
     public static SpawnCause valueOf(CreatureSpawnEvent.SpawnReason spawnReason) {
-        return BUKKIT_MAP.getOrDefault(spawnReason, DEFAULT);
-    }
-
-    public static SpawnCause valueOf(int id) {
-        return Arrays.stream(values()).filter(spawnCause -> spawnCause.getId() == id).findFirst().orElse(DEFAULT);
-    }
-
-    /**
-     * Returns a spawn cause from string. If not found, returning DEFAULT.
-     *
-     * @param name The name to check.
-     */
-    public static SpawnCause matchCause(String name) {
+        if (spawnReason == null) {
+            return DEFAULT;
+        }
         try {
-            return valueOf(name);
+            return valueOf(spawnReason.name());
         } catch (IllegalArgumentException ex) {
             return DEFAULT;
         }
@@ -118,14 +66,10 @@ public enum SpawnCause {
 
     public CreatureSpawnEvent.SpawnReason toSpawnReason() {
         try {
-            return CreatureSpawnEvent.SpawnReason.valueOf(name());
-        } catch (Exception ex) {
+            return CreatureSpawnEvent.SpawnReason.valueOf(this.name());
+        } catch (IllegalArgumentException ex) {
             return CreatureSpawnEvent.SpawnReason.CUSTOM;
         }
-    }
-
-    public int getId() {
-        return id;
     }
 
 }

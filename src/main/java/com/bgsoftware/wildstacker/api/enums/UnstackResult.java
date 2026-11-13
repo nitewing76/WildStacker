@@ -1,12 +1,9 @@
 package com.bgsoftware.wildstacker.api.enums;
 
-/**
- * UnstackResult is an enum that is returned when an object is unstacked.
- */
 public enum UnstackResult {
 
-    ALREADY_DEAD,
+    SUCCESS,
     EVENT_CANCELLED,
-    SUCCESS
+    ALREADY_DEAD
 
 }

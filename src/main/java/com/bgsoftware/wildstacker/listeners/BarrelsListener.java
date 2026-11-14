@@ -4,11 +4,8 @@ import com.bgsoftware.wildstacker.Locale;
 import com.bgsoftware.wildstacker.WildStackerPlugin;
 import com.bgsoftware.wildstacker.api.enums.UnstackResult;
 import com.bgsoftware.wildstacker.api.objects.StackedBarrel;
-import com.bgsoftware.wildstacker.hooks.listeners.IStackedBlockListener;
 import com.bgsoftware.wildstacker.menu.BarrelsPlaceMenu;
 import com.bgsoftware.wildstacker.objects.WStackedBarrel;
-import com.bgsoftware.wildstacker.utils.ServerVersion;
-import com.bgsoftware.wildstacker.utils.entity.EntityUtils;
 import com.bgsoftware.wildstacker.utils.events.EventsCaller;
 import com.bgsoftware.wildstacker.utils.items.ItemUtils;
 import com.bgsoftware.wildstacker.utils.threads.Executor;
@@ -16,7 +13,6 @@ import org.bukkit.Chunk;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
-import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -29,7 +25,6 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.CauldronLevelChangeEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
-import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
@@ -49,8 +44,6 @@ public final class BarrelsListener implements Listener {
 
     public BarrelsListener(WildStackerPlugin plugin) {
         this.plugin = plugin;
-        if (ServerVersion.isAtLeast(ServerVersion.v1_9))
-            plugin.getServer().getPluginManager().registerEvents(new CauldronChangeListener(), plugin);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -60,12 +53,10 @@ public final class BarrelsListener implements Listener {
 
         ItemStack inHand = e.getItemInHand();
 
-        // In some cases, the item in hand may be different than the placed block.
-        // For example, when waxing copper blocks: https://github.com/BG-Software-LLC/WildStacker/issues/685
         if (inHand == null || inHand.getType() != e.getBlock().getType())
             return;
 
-        if (!isBarrelBlock(e.getBlock()) || !plugin.getProviders().canCreateBarrel(inHand))
+        if (!isBarrelBlock(e.getBlock()))
             return;
 
         EquipmentSlot usedHand = ItemUtils.getHand(e);
@@ -105,7 +96,7 @@ public final class BarrelsListener implements Listener {
 
             boolean replaceAir = false;
 
-            if (plugin.getSettings().barrelsShiftPlaceStack) {
+            if (e.getPlayer().isSneaking() && plugin.getSettings().barrelsShiftPlaceStack) {
                 toPlace *= inHand.getAmount();
                 replaceAir = true;
             }
@@ -113,14 +104,12 @@ public final class BarrelsListener implements Listener {
             stackedBarrel.setStackAmount(toPlace, false);
 
             Chunk chunk = e.getBlock().getChunk();
-            boolean REPLACE_AIR = replaceAir;
 
-            //Stacking barrel
-            Optional<Block> blockOptional = stackedBarrel.runStack();
+            Optional<Block> blockOptional = ((WStackedBarrel) stackedBarrel).runStack();
 
             e.setCancelled(true);
 
-            if (!blockOptional.isPresent()) {
+            if (blockOptional.isEmpty()) {
                 if (isChunkLimit(chunk)) {
                     Locale.CHUNK_LIMIT_EXCEEDED.send(e.getPlayer(), ItemUtils.getFormattedType(stackedBarrel.getBarrelItem(1)) + " Barrels");
                     stackedBarrel.remove();
@@ -135,35 +124,13 @@ public final class BarrelsListener implements Listener {
                 if (e.getPlayer().getGameMode() != GameMode.CREATIVE)
                     ItemUtils.removeItemFromHand(e.getPlayer(), 1, usedHand);
 
-                boolean attemptPlaceDelayed = ServerVersion.isLessThan(ServerVersion.v1_9);
-
-                // Down below we set the block type to CAULDRON only one tick in delay, which could
-                // cause a race-condition with performCacheClear. For this reason, we mark the barrel
-                // as "not-ready" and only mark it as ready again after the block type is changed.
-                // https://github.com/BG-Software-LLC/WildStacker/issues/1089
                 ((WStackedBarrel) stackedBarrel).setReady(false);
 
-                //Because we cancel the event (tile entity issues), we need to change the block on a tick after that.
                 Executor.sync(() -> {
                     e.getBlock().setType(Material.CAULDRON);
                     stackedBarrel.createDisplayBlock();
-
                     ((WStackedBarrel) stackedBarrel).setReady(true);
-
-                    if (attemptPlaceDelayed) {
-                        if (e.getBlockPlaced().getType() != Material.CAULDRON)
-                            return;
-
-                        stackedBarrel.updateName();
-
-                        Locale.BARREL_PLACE.send(e.getPlayer(), ItemUtils.getFormattedType(stackedBarrel.getBarrelItem(1)));
-
-                        finishBarrelPlace(e.getPlayer(), usedHand, stackedBarrel, REPLACE_AIR);
-                    }
                 }, 1L);
-
-                if (attemptPlaceDelayed)
-                    return;
 
                 stackedBarrel.updateName();
 
@@ -176,27 +143,24 @@ public final class BarrelsListener implements Listener {
                 Locale.BARREL_UPDATE.send(e.getPlayer(), ItemUtils.getFormattedType(targetBarrel.getBarrelItem(1)), targetBarrel.getStackAmount());
             }
 
-            finishBarrelPlace(e.getPlayer(), usedHand, stackedBarrel, REPLACE_AIR);
+            finishBarrelPlace(e.getPlayer(), usedHand, replaceAir);
         } catch (Exception ex) {
             alreadyBarrelsPlacedPlayers.remove(e.getPlayer().getUniqueId());
             throw ex;
         }
     }
 
-    private void finishBarrelPlace(Player player, EquipmentSlot usedHand, StackedBarrel stackedBarrel, boolean replaceAir) {
-        //Removing item from player's inventory
+    private void finishBarrelPlace(Player player, EquipmentSlot usedHand, boolean replaceAir) {
         if (replaceAir && player.getGameMode() != GameMode.CREATIVE)
             ItemUtils.setItemInHand(player.getInventory(), usedHand, null);
-
-        plugin.getProviders().notifyStackedBlockListeners(player, stackedBarrel.getLocation(),
-                stackedBarrel.getType(), (byte) stackedBarrel.getData(), IStackedBlockListener.Action.BLOCK_PLACE);
 
         alreadyBarrelsPlacedPlayers.remove(player.getUniqueId());
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBarrelBreak(BlockBreakEvent e) {
-        if (!plugin.getSettings().barrelsStackingEnabled || e.getBlock().getType() != Material.CAULDRON)
+        if (!plugin.getSettings().barrelsStackingEnabled ||
+                (e.getBlock().getType() != Material.CAULDRON && e.getBlock().getType() != Material.WATER_CAULDRON))
             return;
 
         if (!plugin.getSystemManager().isStackedBarrel(e.getBlock()))
@@ -217,12 +181,8 @@ public final class BarrelsListener implements Listener {
 
         e.setCancelled(true);
 
-        if (stackedBarrel.runUnstack(stackedBarrel.getStackAmount(), e.getPlayer()) == UnstackResult.SUCCESS) {
-            plugin.getProviders().notifyStackedBlockListeners(e.getPlayer(), stackedBarrel.getLocation(),
-                    stackedBarrel.getType(), (byte) stackedBarrel.getData(), IStackedBlockListener.Action.BLOCK_BREAK);
-
+        if (stackedBarrel.runUnstack(stackSize, e.getPlayer()) == UnstackResult.SUCCESS) {
             e.getBlock().setType(Material.AIR);
-
             Locale.BARREL_BREAK.send(e.getPlayer(), stackSize, ItemUtils.getFormattedType(stackedBarrel.getBarrelItem(1)));
         }
     }
@@ -232,7 +192,7 @@ public final class BarrelsListener implements Listener {
         if (!plugin.getSettings().barrelsStackingEnabled)
             return;
 
-        if (ItemUtils.isOffHand(e) || e.getAction() != Action.RIGHT_CLICK_BLOCK)
+        if (ItemUtils.isOffHand(e) || e.getAction() != Action.RIGHT_CLICK_BLOCK || e.getClickedBlock() == null)
             return;
 
         if (!plugin.getSystemManager().isStackedBarrel(e.getClickedBlock()))
@@ -245,16 +205,14 @@ public final class BarrelsListener implements Listener {
 
         ItemStack offHandItem = ItemUtils.getItemInOffhand(e.getPlayer().getInventory());
 
-        // In case we're going to place a block from the off-hand, we don't want to do anything related to clicking barrels.
         if (offHandItem != null && offHandItem.getType() == stackedBarrel.getType())
             return;
 
         if (e.getPlayer().isSneaking() && plugin.getSettings().barrelsPlaceInventory) {
             BarrelsPlaceMenu.open(e.getPlayer(), stackedBarrel);
+            e.setCancelled(true);
         } else if (stackedBarrel.runUnstack(1, e.getPlayer()) == UnstackResult.SUCCESS) {
-            plugin.getProviders().notifyStackedBlockListeners(e.getPlayer(), stackedBarrel.getLocation(),
-                    stackedBarrel.getType(), (byte) stackedBarrel.getData(), IStackedBlockListener.Action.BLOCK_BREAK);
-
+            e.setCancelled(true);
             if (e.getPlayer().getGameMode() != GameMode.CREATIVE) {
                 ItemStack dropStack = EventsCaller.callBarrelDropEvent(stackedBarrel, e.getPlayer(), 1);
 
@@ -270,9 +228,9 @@ public final class BarrelsListener implements Listener {
         }
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent e) {
-        if (!plugin.getSettings().barrelsStackingEnabled || plugin.getNMSAdapter().isSoftExplosion(e))
+        if (!plugin.getSettings().barrelsStackingEnabled)
             return;
 
         Iterator<Block> blockListIterator = e.blockList().iterator();
@@ -289,17 +247,12 @@ public final class BarrelsListener implements Listener {
             if (stackedBarrel.runUnstack(amount, e.getEntity()) == UnstackResult.SUCCESS) {
                 ItemStack barrelItem = EventsCaller.callBarrelDropEvent(stackedBarrel, null, amount);
                 ItemUtils.dropItem(barrelItem, block.getLocation());
+                if (stackedBarrel.getStackAmount() <= 0) {
+                    block.setType(Material.AIR);
+                }
             }
 
             blockListIterator.remove();
-        }
-    }
-
-    @EventHandler
-    public void onEntityInteract(PlayerInteractAtEntityEvent e) {
-        if (e.getRightClicked() instanceof ArmorStand) {
-            if (plugin.getSystemManager().isStackedBarrel(e.getRightClicked().getLocation().getBlock().getLocation()))
-                e.setCancelled(true);
         }
     }
 
@@ -316,17 +269,15 @@ public final class BarrelsListener implements Listener {
 
         e.setCancelled(true);
 
-        if (barrelsToggleCommandPlayers.contains(e.getPlayer().getUniqueId())) {
-            barrelsToggleCommandPlayers.remove(e.getPlayer().getUniqueId());
+        if (barrelsToggleCommandPlayers.remove(e.getPlayer().getUniqueId())) {
             Locale.BARREL_TOGGLE_OFF.send(e.getPlayer());
         } else {
             barrelsToggleCommandPlayers.add(e.getPlayer().getUniqueId());
             Locale.BARREL_TOGGLE_ON.send(e.getPlayer());
         }
-
     }
 
-    @EventHandler
+    @EventHandler(ignoreCancelled = true)
     public void onPistonExtend(BlockPistonExtendEvent e) {
         if (!plugin.getSettings().barrelsStackingEnabled)
             return;
@@ -339,7 +290,7 @@ public final class BarrelsListener implements Listener {
         }
     }
 
-    @EventHandler
+    @EventHandler(ignoreCancelled = true)
     public void onPistonRetract(BlockPistonRetractEvent e) {
         if (!plugin.getSettings().barrelsStackingEnabled)
             return;
@@ -349,6 +300,16 @@ public final class BarrelsListener implements Listener {
                 e.setCancelled(true);
                 break;
             }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onCauldronFill(CauldronLevelChangeEvent e) {
+        if (!plugin.getSettings().barrelsStackingEnabled)
+            return;
+
+        if (plugin.getSystemManager().isStackedBarrel(e.getBlock())) {
+            e.setCancelled(true);
         }
     }
 
@@ -367,21 +328,6 @@ public final class BarrelsListener implements Listener {
             return false;
 
         return plugin.getSystemManager().getStackedBarrels(chunk).size() > chunkLimit;
-    }
-
-    private class CauldronChangeListener implements Listener {
-
-        @EventHandler(priority = EventPriority.LOWEST)
-        public void onCauldronFill(CauldronLevelChangeEvent e) {
-            if (!plugin.getSettings().barrelsStackingEnabled)
-                return;
-
-            if (plugin.getSystemManager().isStackedBarrel(e.getBlock())) {
-                e.setCancelled(true);
-                e.setNewLevel(0);
-            }
-        }
-
     }
 
 }

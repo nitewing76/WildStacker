@@ -1,11 +1,12 @@
 package com.bgsoftware.wildstacker.utils.files;
 
 import com.bgsoftware.wildstacker.WildStackerPlugin;
+import com.bgsoftware.wildstacker.handlers.SettingsHandler;
 import com.bgsoftware.wildstacker.menu.WildMenu;
-import com.bgsoftware.wildstacker.utils.ServerVersion;
 import com.bgsoftware.wildstacker.utils.items.ItemBuilder;
-import org.bukkit.ChatColor;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
 import org.bukkit.Sound;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.enchantments.Enchantment;
@@ -13,11 +14,11 @@ import org.bukkit.inventory.ItemFlag;
 
 import javax.annotation.Nullable;
 import java.io.File;
-import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public final class FileUtils {
@@ -25,9 +26,7 @@ public final class FileUtils {
     private static final WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
 
     private FileUtils() {
-
     }
-
 
     public static void saveResource(String resourcePath) {
         saveResource(resourcePath, null);
@@ -36,15 +35,11 @@ public final class FileUtils {
     public static void saveResource(String resourcePath, @Nullable String newName) {
         try {
             File outputFile = new File(plugin.getDataFolder(), newName == null ? resourcePath : newName);
-
             if (!outputFile.exists()) {
-                String realResourcePath = getVersionedResourcePath(resourcePath);
-                if (realResourcePath == null)
-                    throw new IllegalArgumentException("The embedded resource '" + resourcePath + "' cannot be found");
-
-                plugin.saveResource(realResourcePath, true);
-                if (newName != null || !realResourcePath.equals(resourcePath)) {
-                    File resourceFile = new File(plugin.getDataFolder(), realResourcePath);
+                plugin.saveResource(resourcePath, false);
+                if (newName != null) {
+                    File resourceFile = new File(plugin.getDataFolder(), resourcePath);
+                    //noinspection ResultOfMethodCallIgnored
                     resourceFile.renameTo(outputFile);
                 }
             }
@@ -54,29 +49,27 @@ public final class FileUtils {
     }
 
     public static InputStream getResource(String resourcePath) {
-        try {
-            String realResourcePath = getVersionedResourcePath(resourcePath);
-            return realResourcePath == null ? null : plugin.getResource(realResourcePath);
-        } catch (Exception error) {
-            throw new RuntimeException(error);
-        }
+        return plugin.getResource(resourcePath);
     }
 
     public static ItemBuilder getItemStack(String fileName, ConfigurationSection section) {
         if (section == null || !section.isString("type"))
             return null;
 
-        String materialName = section.getString("type");
+        String materialName = section.getString("type", "");
         Material type;
-        short data;
+        short data = (short) section.getInt("data", 0);
 
         try {
-            type = Material.valueOf(materialName);
-            data = (short) section.getInt("data");
+            type = Material.valueOf(materialName.toUpperCase(Locale.ENGLISH));
         } catch (IllegalArgumentException e) {
-            WildStackerPlugin.log("&c[" + fileName + "] Couldn't convert '" + materialName +
-                    "' into an material in '" + section.getCurrentPath() + ".type', skipping...");
-            return null;
+            Material matched = Material.matchMaterial(materialName);
+            if (matched == null) {
+                WildStackerPlugin.log("&c[" + fileName + "] Couldn't convert '" + materialName +
+                        "' into a material in '" + section.getCurrentPath() + ".type', skipping...");
+                return null;
+            }
+            type = matched;
         }
 
         ItemBuilder itemBuilder = new ItemBuilder(type, data);
@@ -90,26 +83,30 @@ public final class FileUtils {
         if (section.isList("lore"))
             itemBuilder.withLore(section.getStringList("lore"));
 
-        if (section.isConfigurationSection("enchants")) {
-            for (String enchantName : section.getConfigurationSection("enchants").getKeys(false)) {
-                Enchantment enchantment;
-
-                try {
-                    enchantment = Enchantment.getByName(enchantName);
-                } catch (IllegalArgumentException e) {
-                    WildStackerPlugin.log("&c[" + fileName + "] Couldn't convert '" + enchantName +
-                            "' into an enchantment in '" + section.getCurrentPath() + ".enchants', skipping...");
-                    continue;
+        ConfigurationSection enchantsSection = section.getConfigurationSection("enchants");
+        if (enchantsSection != null) {
+            for (String enchantName : enchantsSection.getKeys(false)) {
+                Enchantment enchantment = Registry.ENCHANTMENT.get(NamespacedKey.minecraft(enchantName.toLowerCase(Locale.ENGLISH)));
+                if (enchantment == null) {
+                    //noinspection deprecation
+                    enchantment = Enchantment.getByName(enchantName.toUpperCase(Locale.ENGLISH));
                 }
-
-                itemBuilder.withEnchant(enchantment, section.getInt("enchants." + enchantName));
+                if (enchantment == null) {
+                    itemBuilder.withGlow();
+                } else {
+                    itemBuilder.withEnchant(enchantment, enchantsSection.getInt(enchantName, 1));
+                }
             }
+        }
+
+        if (section.isBoolean("glow") && section.getBoolean("glow")) {
+            itemBuilder.withGlow();
         }
 
         if (section.isList("flags")) {
             for (String flagName : section.getStringList("flags")) {
                 try {
-                    itemBuilder.withFlags(ItemFlag.valueOf(flagName));
+                    itemBuilder.withFlags(ItemFlag.valueOf(flagName.toUpperCase(Locale.ENGLISH)));
                 } catch (IllegalArgumentException e) {
                     WildStackerPlugin.log("&c[" + fileName + "] Couldn't convert '" + flagName +
                             "' into an item flag in '" + section.getCurrentPath() + ".flags', skipping...");
@@ -128,7 +125,7 @@ public final class FileUtils {
 
         menu.resetData();
 
-        menu.setTitle(ChatColor.translateAlternateColorCodes('&', section.getString("title", "")));
+        menu.setTitle(SettingsHandler.translateAmpersand(section.getString("title", "")));
 
         List<String> pattern = section.getStringList("pattern");
 
@@ -155,10 +152,7 @@ public final class FileUtils {
                         menu.addSound(slot, sound);
                     }
 
-                    if (!charSlots.containsKey(ch))
-                        charSlots.put(ch, new ArrayList<>());
-
-                    charSlots.get(ch).add(slot);
+                    charSlots.computeIfAbsent(ch, k -> new ArrayList<>()).add(slot);
 
                     slot++;
                 }
@@ -169,46 +163,31 @@ public final class FileUtils {
     }
 
     public static SoundWrapper getSound(ConfigurationSection section) {
-        Sound sound = null;
+        if (section == null)
+            return null;
 
+        String soundType = section.getString("type");
+        if (soundType == null || soundType.isEmpty())
+            return null;
+
+        Sound sound = null;
         try {
-            sound = Sound.valueOf(section.getString("type"));
+            NamespacedKey key = NamespacedKey.minecraft(soundType.toLowerCase(Locale.ENGLISH).replace('_', '.'));
+            sound = Registry.SOUNDS.get(key);
         } catch (Exception ignored) {
+        }
+
+        if (sound == null) {
+            try {
+                sound = Sound.valueOf(soundType.toUpperCase(Locale.ENGLISH));
+            } catch (Exception ignored) {
+            }
         }
 
         if (sound == null)
             return null;
 
-        return new SoundWrapper(sound, (float) section.getDouble("volume"), (float) section.getDouble("pitch"));
-    }
-
-    @Nullable
-    private static String getVersionedResourcePath(String path) throws IOException {
-        String[] pathSections = path.split("\\.");
-
-        String suffix = "." + pathSections[pathSections.length - 1];
-
-        String filePathNoSuffix = path.replace(suffix, "");
-
-        for (ServerVersion serverVersion : ServerVersion.getByOrder()) {
-            String resourcePath = filePathNoSuffix + serverVersion.name().substring(1) + suffix;
-            try (InputStream versionResource = plugin.getResource(resourcePath)) {
-                if (versionResource != null)
-                    return resourcePath;
-            }
-        }
-
-        if (ServerVersion.isLegacy()) {
-            String resourcePath = filePathNoSuffix + "_legacy" + suffix;
-            try (InputStream legacyResource = plugin.getResource(resourcePath)) {
-                if (legacyResource != null)
-                    return resourcePath;
-            }
-        }
-
-        try (InputStream resource = plugin.getResource(path)) {
-            return resource == null ? null : path;
-        }
+        return new SoundWrapper(sound, (float) section.getDouble("volume", 1.0), (float) section.getDouble("pitch", 1.0));
     }
 
 }

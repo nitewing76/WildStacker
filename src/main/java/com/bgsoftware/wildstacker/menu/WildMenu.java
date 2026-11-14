@@ -5,6 +5,7 @@ import com.bgsoftware.wildstacker.utils.files.SoundWrapper;
 import com.bgsoftware.wildstacker.utils.items.ItemBuilder;
 import com.bgsoftware.wildstacker.utils.pair.Pair;
 import com.bgsoftware.wildstacker.utils.threads.Executor;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.Player;
@@ -12,6 +13,7 @@ import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public abstract class WildMenu implements InventoryHolder {
 
-    protected static final String[] IGNORED_CONFIG_PATHS = new String[]{"items", "sounds", "commands"};
+    private static final LegacyComponentSerializer SECTION_SERIALIZER = LegacyComponentSerializer.legacySection();
 
     protected static final WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
     protected static final Map<String, MenuData> dataMap = new ConcurrentHashMap<>();
@@ -43,7 +45,7 @@ public abstract class WildMenu implements InventoryHolder {
 
         List<Character> chars = new ArrayList<>();
 
-        for (char ch : section.getString(key).toCharArray())
+        for (char ch : section.getString(key, "").toCharArray())
             chars.add(ch);
 
         List<Integer> slots = new ArrayList<>();
@@ -53,7 +55,7 @@ public abstract class WildMenu implements InventoryHolder {
         return slots.isEmpty() ? Collections.singletonList(-1) : slots;
     }
 
-    public final void onButtonClick(InventoryClickEvent e) {
+    public void onButtonClick(InventoryClickEvent e) {
         Player player = (Player) e.getWhoClicked();
 
         if (cancelOnClick)
@@ -94,9 +96,9 @@ public abstract class WildMenu implements InventoryHolder {
     public abstract void onMenuClose(InventoryCloseEvent e);
 
     public void onInventoryBuild() {
-
     }
 
+    @NotNull
     @Override
     public Inventory getInventory() {
         return buildInventory();
@@ -133,15 +135,15 @@ public abstract class WildMenu implements InventoryHolder {
     protected Inventory buildInventory() {
         MenuData menuData = getData();
 
-        Inventory inventory = Bukkit.createInventory(this, menuData.rowsSize * 9, menuData.title);
+        Inventory inv = Bukkit.createInventory(this, Math.max(9, menuData.rowsSize * 9), SECTION_SERIALIZER.deserialize(menuData.title));
 
         for (Map.Entry<Integer, ItemBuilder> itemStackEntry : menuData.fillItems.entrySet()) {
             ItemBuilder itemBuilder = itemStackEntry.getValue().copy();
             if (itemStackEntry.getKey() >= 0)
-                inventory.setItem(itemStackEntry.getKey(), itemBuilder.build());
+                inv.setItem(itemStackEntry.getKey(), itemBuilder.build());
         }
 
-        return inventory;
+        return inv;
     }
 
     public boolean isCancelOnClick() {
@@ -193,11 +195,7 @@ public abstract class WildMenu implements InventoryHolder {
     }
 
     protected MenuData getData() {
-        if (!dataMap.containsKey(identifier)) {
-            dataMap.put(identifier, new MenuData());
-        }
-
-        return dataMap.get(identifier);
+        return dataMap.computeIfAbsent(identifier, k -> new MenuData());
     }
 
     protected static final class MenuData {

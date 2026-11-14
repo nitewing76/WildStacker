@@ -7,11 +7,8 @@ import com.bgsoftware.wildstacker.api.objects.StackedSpawner;
 import com.bgsoftware.wildstacker.command.ICommand;
 import com.bgsoftware.wildstacker.objects.WStackedBarrel;
 import com.bgsoftware.wildstacker.objects.WStackedSpawner;
-import com.bgsoftware.wildstacker.utils.entity.EntityUtils;
 import com.bgsoftware.wildstacker.utils.items.ItemUtils;
-import com.bgsoftware.wildstacker.utils.legacy.Materials;
-import com.google.common.collect.Sets;
-import org.bukkit.ChatColor;
+import org.bukkit.FluidCollisionMode;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.command.CommandSender;
@@ -19,7 +16,6 @@ import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 public final class CommandInfo implements ICommand {
 
@@ -55,25 +51,22 @@ public final class CommandInfo implements ICommand {
 
     @Override
     public void perform(WildStackerPlugin plugin, CommandSender sender, String[] args) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage(ChatColor.RED + "Only players can perform this command.");
+        if (!(sender instanceof Player pl)) {
+            Locale.sendMessage(sender, "&cOnly players can perform this command.");
             return;
         }
 
-        Player pl = (Player) sender;
+        Block targetBlock = pl.getTargetBlockExact(10, FluidCollisionMode.NEVER);
 
-        Block targetBlock = pl.getTargetBlock(getMaterials("AIR", "WATER", "STATIONARY_WATER"), 10);
-
-        if (targetBlock != null && targetBlock.getType() == Materials.SPAWNER.toBukkitType()) {
+        if (targetBlock != null && targetBlock.getType() == Material.SPAWNER) {
             StackedSpawner stackedSpawner = WStackedSpawner.of(targetBlock);
 
             Locale.SPAWNER_INFO_HEADER.send(sender);
-            Locale.SPAWNER_INFO_TYPE.send(sender, EntityUtils.getFormattedType(stackedSpawner.getSpawnedType().name()));
+            Locale.SPAWNER_INFO_TYPE.send(sender, ItemUtils.getFormattedEntityType(stackedSpawner.getSpawnedType()));
             Locale.SPAWNER_INFO_AMOUNT.send(sender, stackedSpawner.getStackAmount());
-            Locale.SPAWNER_INFO_UPGRADE.send(sender, stackedSpawner.getUpgrade().getName());
             Locale.SPAWNER_INFO_FOOTER.send(sender);
             return;
-        } else if (plugin.getSystemManager().isStackedBarrel(targetBlock)) {
+        } else if (targetBlock != null && plugin.getSystemManager().isStackedBarrel(targetBlock)) {
             StackedBarrel stackedBarrel = WStackedBarrel.of(targetBlock);
 
             Locale.BARREL_INFO_HEADER.send(sender);
@@ -89,19 +82,6 @@ public final class CommandInfo implements ICommand {
     @Override
     public List<String> tabComplete(WildStackerPlugin plugin, CommandSender sender, String[] args) {
         return new ArrayList<>();
-    }
-
-    private Set<Material> getMaterials(String... materials) {
-        Set<Material> materialsSet = Sets.newHashSet();
-
-        for (String material : materials) {
-            try {
-                materialsSet.add(Material.valueOf(material));
-            } catch (IllegalArgumentException ignored) {
-            }
-        }
-
-        return materialsSet;
     }
 
 }

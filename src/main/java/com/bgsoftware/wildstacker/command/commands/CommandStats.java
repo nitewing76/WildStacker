@@ -41,8 +41,6 @@ public final class CommandStats implements ICommand {
 
     @Override
     public void perform(WildStackerPlugin plugin, CommandSender sender, String[] args) {
-        int entitiesAmount = plugin.getDataHandler().stackedEntityStore.size();
-        int unloadedEntitiesAmount = plugin.getDataHandler().stackedEntityStore.sizeUnloaded();
         int itemsAmount = plugin.getDataHandler().stackedItemStore.size();
         int unloadedItemsAmount = plugin.getDataHandler().stackedItemStore.sizeUnloaded();
         int spawnersAmount = plugin.getDataHandler().stackedSpawnerStore.size();
@@ -51,7 +49,6 @@ public final class CommandStats implements ICommand {
         int barrelsUnloadedAmount = plugin.getDataHandler().stackedBarrelStore.sizeUnloaded();
 
         String message = "&eWildStacker Stats:" +
-                "\n&e - Stacked Entities: (Loaded: " + entitiesAmount + ", Unloaded: " + unloadedEntitiesAmount + ")" +
                 "\n&e - Stacked Items: (Loaded: " + itemsAmount + ", Unloaded: " + unloadedItemsAmount + ")" +
                 "\n&e - Stacked Spawners: (Loaded: " + spawnersAmount + ", Unloaded: " + spawnersUnloadedAmount + ")" +
                 "\n&e - Stacked Barrels: (Loaded: " + barrelsAmount + ", Unloaded: " + barrelsUnloadedAmount + ")";
@@ -63,4 +60,5 @@ public final class CommandStats implements ICommand {
     public List<String> tabComplete(WildStackerPlugin plugin, CommandSender sender, String[] args) {
         return null;
     }
+
 }

@@ -3,11 +3,10 @@ package com.bgsoftware.wildstacker.command.commands;
 import com.bgsoftware.wildstacker.Locale;
 import com.bgsoftware.wildstacker.WildStackerPlugin;
 import com.bgsoftware.wildstacker.command.ICommand;
-import com.bgsoftware.wildstacker.handlers.LootHandler;
 import com.bgsoftware.wildstacker.handlers.SettingsHandler;
 import com.bgsoftware.wildstacker.tasks.ItemsMerger;
 import com.bgsoftware.wildstacker.tasks.KillTask;
-import com.bgsoftware.wildstacker.tasks.StackTask;
+import com.bgsoftware.wildstacker.utils.holograms.OnDemandHologramManager;
 import com.bgsoftware.wildstacker.utils.threads.Executor;
 import org.bukkit.command.CommandSender;
 
@@ -48,13 +47,12 @@ public final class CommandReload implements ICommand {
 
     @Override
     public void perform(WildStackerPlugin plugin, CommandSender sender, String[] args) {
-        Executor.async(() -> {
+        Executor.sync(() -> {
             SettingsHandler.reload();
-            LootHandler.reload();
             Locale.reload();
             KillTask.start();
-            StackTask.start();
             ItemsMerger.start();
+            OnDemandHologramManager.start(plugin);
             Locale.RELOAD_SUCCESS.send(sender);
         });
     }
@@ -63,4 +61,5 @@ public final class CommandReload implements ICommand {
     public List<String> tabComplete(WildStackerPlugin plugin, CommandSender sender, String[] args) {
         return new ArrayList<>();
     }
+
 }

@@ -1,8 +1,8 @@
 package com.bgsoftware.wildstacker.command.commands;
 
+import com.bgsoftware.wildstacker.Locale;
 import com.bgsoftware.wildstacker.WildStackerPlugin;
 import com.bgsoftware.wildstacker.command.ICommand;
-import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 
 import java.util.ArrayList;
@@ -27,7 +27,7 @@ public final class CommandSave implements ICommand {
 
     @Override
     public String getDescription() {
-        return "Save cached entities and items to database.";
+        return "Save cached items, spawners and barrels to database.";
     }
 
     @Override
@@ -44,11 +44,12 @@ public final class CommandSave implements ICommand {
     public void perform(WildStackerPlugin plugin, CommandSender sender, String[] args) {
         long startTime = System.currentTimeMillis();
         plugin.getSystemManager().performCacheSave();
-        sender.sendMessage(ChatColor.YELLOW + "Saved all cached entities & items (" + (System.currentTimeMillis() - startTime) + "ms).");
+        Locale.sendMessage(sender, "&eSaved all cached items, spawners & barrels (" + (System.currentTimeMillis() - startTime) + "ms).");
     }
 
     @Override
     public List<String> tabComplete(WildStackerPlugin plugin, CommandSender sender, String[] args) {
         return new ArrayList<>();
     }
+
 }

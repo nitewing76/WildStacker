@@ -4,7 +4,6 @@ import com.bgsoftware.wildstacker.WildStackerPlugin;
 import com.bgsoftware.wildstacker.api.objects.StackedBarrel;
 import com.bgsoftware.wildstacker.api.objects.StackedItem;
 import com.bgsoftware.wildstacker.api.objects.StackedSpawner;
-import com.bgsoftware.wildstacker.menu.BarrelAmountsMenu;
 import com.bgsoftware.wildstacker.menu.SpawnerAmountsMenu;
 import com.bgsoftware.wildstacker.menu.SpawnersManageMenu;
 import com.bgsoftware.wildstacker.objects.WStackedBarrel;
@@ -15,7 +14,6 @@ import com.bgsoftware.wildstacker.utils.data.structures.FastEnumMap;
 import com.bgsoftware.wildstacker.utils.items.ItemBuilder;
 import com.bgsoftware.wildstacker.utils.names.NameBuilder;
 import com.bgsoftware.wildstacker.utils.names.NamePlaceholder;
-import com.bgsoftware.wildstacker.utils.pair.Pair;
 import com.bgsoftware.wildstacker.utils.particles.ParticleWrapper;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Material;
@@ -41,8 +39,7 @@ public final class SettingsHandler {
 
     public final Pattern SPAWNERS_PATTERN;
     public final String[] CONFIG_IGNORED_SECTIONS = {"merge-radius", "limits", "minimum-required", "default-unstack",
-            "break-slots", "manage-menu", "break-charge", "place-charge", "spawners-override.spawn-conditions",
-            "spawner-upgrades.ladders"};
+            "break-slots", "manage-menu", "spawners-override.spawn-conditions", "spawner-upgrades.ladders"};
 
     // CMI Hologram View Range (fallback 16)
     public final int cmiHologramViewRange;
@@ -96,7 +93,6 @@ public final class SettingsHandler {
     public final NameBuilder<StackedSpawner> spawnersNameBuilder;
     public final FastEnumMap<EntityType, Integer> spawnersMergeRadius, spawnersLimits;
     public final List<ParticleWrapper> spawnersParticles;
-    public final FastEnumMap<EntityType, Pair<Double, Boolean>> spawnersBreakCharge, spawnersPlaceCharge;
 
     // Barrels settings
     public final boolean barrelsStackingEnabled, barrelsParticlesEnabled, chunkMergeBarrels, explosionsBreakBarrelStack,
@@ -238,54 +234,6 @@ public final class SettingsHandler {
         spawnersPlacementPermission = cfg.getBoolean("spawners.placement-permission", false);
         spawnersShiftPlaceStack = cfg.getBoolean("spawners.shift-place-stack", true);
 
-        spawnersBreakCharge = new FastEnumMap<>(EntityType.class);
-        ConfigurationSection breakChargeSection = cfg.getConfigurationSection("spawners.break-charge");
-        if (breakChargeSection != null) {
-            for (String key : breakChargeSection.getKeys(false)) {
-                ConfigurationSection mobSection = cfg.getConfigurationSection("spawners.break-charge." + key);
-                if (mobSection == null)
-                    continue;
-
-                double amount = mobSection.getDouble("price", 0.0);
-                if (amount <= 0)
-                    continue;
-
-                if (key.equalsIgnoreCase("ALL")) {
-                    spawnersBreakCharge.putGlobal(new Pair<>(amount, mobSection.getBoolean("multiply-stack-amount", false)));
-                } else {
-                    try {
-                        EntityType entityType = EntityType.valueOf(key.toUpperCase(Locale.ENGLISH));
-                        spawnersBreakCharge.put(entityType, new Pair<>(amount, mobSection.getBoolean("multiply-stack-amount", false)));
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        }
-
-        spawnersPlaceCharge = new FastEnumMap<>(EntityType.class);
-        ConfigurationSection placeChargeSection = cfg.getConfigurationSection("spawners.place-charge");
-        if (placeChargeSection != null) {
-            for (String key : placeChargeSection.getKeys(false)) {
-                ConfigurationSection mobSection = cfg.getConfigurationSection("spawners.place-charge." + key);
-                if (mobSection == null)
-                    continue;
-
-                double amount = mobSection.getDouble("price", 0.0);
-                if (amount <= 0)
-                    continue;
-
-                if (key.equalsIgnoreCase("ALL")) {
-                    spawnersPlaceCharge.putGlobal(new Pair<>(amount, mobSection.getBoolean("multiply-stack-amount", false)));
-                } else {
-                    try {
-                        EntityType entityType = EntityType.valueOf(key.toUpperCase(Locale.ENGLISH));
-                        spawnersPlaceCharge.put(entityType, new Pair<>(amount, mobSection.getBoolean("multiply-stack-amount", false)));
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        }
-
         changeUsingEggs = cfg.getBoolean("spawners.change-using-eggs", true);
         eggsStackMultiply = cfg.getBoolean("spawners.eggs-stack-multiply", true);
         nextSpawnerPlacement = cfg.getBoolean("spawners.next-spawner-placement", true);
@@ -345,7 +293,6 @@ public final class SettingsHandler {
 
         SpawnersManageMenu.loadMenu();
         SpawnerAmountsMenu.loadMenu();
-        BarrelAmountsMenu.loadMenu();
 
         WildStackerPlugin.log("Loading configuration done (Took " + (System.currentTimeMillis() - startTime) + "ms)");
     }
@@ -469,36 +416,6 @@ public final class SettingsHandler {
             cfg.set("buckets.name-blacklist", cfg.getStringList("items.buckets-stacker.name-blacklist"));
         if (cfg.contains("items.buckets-stacker.max-stack"))
             cfg.set("buckets.max-stack", cfg.getInt("items.buckets-stacker.max-stack"));
-        if (cfg.contains("spawners.break-charge.amount")) {
-            List<String> mobs = cfg.getStringList("spawners.break-charge.whitelist");
-            if (mobs.isEmpty()) {
-                mobs.add("EXAMPLE_MOB");
-            }
-
-            for (String mob : mobs) {
-                cfg.set("spawners.break-charge." + mob + ".price", cfg.getInt("spawners.break-charge.amount"));
-                cfg.set("spawners.break-charge." + mob + ".multiply-stack-amount", cfg.getBoolean("spawners.break-charge.multiply-stack-amount"));
-            }
-
-            cfg.set("spawners.break-charge.amount", null);
-            cfg.set("spawners.break-charge.multiply-stack-amount", null);
-            cfg.set("spawners.break-charge.whitelist", null);
-        }
-        if (cfg.contains("spawners.place-charge.amount")) {
-            List<String> mobs = cfg.getStringList("spawners.place-charge.whitelist");
-            if (mobs.isEmpty()) {
-                mobs.add("EXAMPLE_MOB");
-            }
-
-            for (String mob : mobs) {
-                cfg.set("spawners.place-charge." + mob + ".price", cfg.getInt("spawners.place-charge.amount"));
-                cfg.set("spawners.place-charge." + mob + ".multiply-stack-amount", cfg.getBoolean("spawners.place-charge.multiply-stack-amount"));
-            }
-
-            cfg.set("spawners.place-charge.amount", null);
-            cfg.set("spawners.place-charge.multiply-stack-amount", null);
-            cfg.set("spawners.place-charge.whitelist", null);
-        }
         if (cfg.contains("spawners.silk-spawners")) {
             cfg.set("spawners.silk-touch", cfg.getConfigurationSection("spawners.silk-spawners"));
             cfg.set("spawners.silk-spawners", null);

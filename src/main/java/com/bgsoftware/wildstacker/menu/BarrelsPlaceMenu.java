@@ -1,15 +1,13 @@
 package com.bgsoftware.wildstacker.menu;
 
 import com.bgsoftware.wildstacker.Locale;
+import com.bgsoftware.wildstacker.WildStackerPlugin;
 import com.bgsoftware.wildstacker.api.objects.StackedBarrel;
 import com.bgsoftware.wildstacker.objects.WStackedBarrel;
-import com.bgsoftware.wildstacker.utils.ServerVersion;
-import com.bgsoftware.wildstacker.utils.entity.EntityUtils;
 import com.bgsoftware.wildstacker.utils.events.EventsCaller;
 import com.bgsoftware.wildstacker.utils.items.ItemUtils;
-import com.bgsoftware.wildstacker.utils.threads.Executor;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
-import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -17,145 +15,103 @@ import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 
+import java.lang.ref.WeakReference;
+
 public final class BarrelsPlaceMenu extends WildMenu {
 
-    private final Inventory inventory;
-    private final Location location;
-    private final ItemStack barrelItem;
+    private static final WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
+    private static final LegacyComponentSerializer SECTION_SERIALIZER = LegacyComponentSerializer.legacySection();
 
-    private boolean closeFlag = false;
+    private final WeakReference<StackedBarrel> stackedBarrel;
 
-    private BarrelsPlaceMenu(Location location, ItemStack barrelItem) {
-        super("barrelsPlace");
-        this.location = location;
-        this.inventory = Bukkit.createInventory(this, 9 * 4, plugin.getSettings().barrelsPlaceInventoryTitle
-                .replace("{0}", EntityUtils.getFormattedType(barrelItem.getType().name())));
-        this.barrelItem = barrelItem;
-        this.cancelOnClick = false;
+    private BarrelsPlaceMenu(StackedBarrel stackedBarrel) {
+        super("barrelsPlaceMenu");
+        this.stackedBarrel = new WeakReference<>(stackedBarrel);
+
+        String title = plugin.getSettings().barrelsPlaceInventoryTitle
+                .replace("{0}", ((WStackedBarrel) stackedBarrel).getCachedDisplayName());
+        this.inventory = Bukkit.createInventory(this, 36, SECTION_SERIALIZER.deserialize(title));
+        ((WStackedBarrel) stackedBarrel).linkInventory(this.inventory);
     }
 
     public static void open(Player player, StackedBarrel stackedBarrel) {
-        BarrelsPlaceMenu barrelsPlaceMenu = new BarrelsPlaceMenu(stackedBarrel.getLocation(), stackedBarrel.getBarrelItem(1));
-        ((WStackedBarrel) stackedBarrel).linkInventory(barrelsPlaceMenu.inventory);
-        player.openInventory(barrelsPlaceMenu.inventory);
+        new BarrelsPlaceMenu(stackedBarrel).openMenu(player);
+    }
+
+    @Override
+    public void onButtonClick(InventoryClickEvent e) {
+        // Allow players to place items into this inventory freely
     }
 
     @Override
     public void onPlayerClick(InventoryClickEvent e) {
-        if (!plugin.getSettings().barrelsRequiredPermission.isEmpty() &&
-                !e.getWhoClicked().hasPermission(plugin.getSettings().barrelsRequiredPermission)) {
-            e.setCancelled(true);
-            Locale.BARREL_NO_PERMISSION.send(e.getWhoClicked());
-            Executor.sync(() -> e.getWhoClicked().closeInventory(), 1L);
-            return;
-        }
-
-        if (!plugin.getSystemManager().isStackedBarrel(location)) {
-            e.setCancelled(true);
-            Executor.sync(() -> e.getWhoClicked().closeInventory(), 1L);
-            return;
-        }
-
-        ItemStack barrelItem;
-
-        switch (e.getAction()) {
-            case HOTBAR_SWAP:
-                barrelItem = e.getHotbarButton() < 0 ? null : e.getWhoClicked().getInventory().getItem(e.getHotbarButton());
-                break;
-            case PLACE_ALL:
-            case PLACE_SOME:
-            case PLACE_ONE:
-                barrelItem = e.getCursor();
-                break;
-            case PICKUP_ALL:
-            case PICKUP_HALF:
-            case PICKUP_ONE:
-            case PICKUP_SOME:
-            case MOVE_TO_OTHER_INVENTORY:
-                barrelItem = e.getCurrentItem();
-                break;
-            default:
-                return;
-        }
-
-        if (barrelItem == null)
-            return;
-
-        if (!isSimilar(barrelItem)) {
-            e.setCancelled(true);
-        }
-
-        Executor.sync(() -> {
-            if (closeFlag) {
-                for (ItemStack itemStack : e.getWhoClicked().getInventory().getContents()) {
-                    if (barrelItem.equals(itemStack))
-                        return;
-                }
-
-                ItemUtils.addItem(barrelItem, e.getWhoClicked().getInventory(), location);
-            }
-        }, 5L);
     }
 
     @Override
     public void onMenuClose(InventoryCloseEvent e) {
-        closeFlag = true;
+        StackedBarrel barrel = this.stackedBarrel.get();
+        Player player = (Player) e.getPlayer();
 
-        StackedBarrel stackedBarrel = WStackedBarrel.of(location);
-
-        int amount = 0;
-        boolean dropAll = false;
-
-        if (!plugin.getSettings().barrelsRequiredPermission.isEmpty() &&
-                !e.getPlayer().hasPermission(plugin.getSettings().barrelsRequiredPermission)) {
-            Locale.BARREL_NO_PERMISSION.send(e.getPlayer());
-            dropAll = true;
+        if (barrel != null) {
+            ((WStackedBarrel) barrel).unlinkInventory(e.getInventory());
         }
 
-        if (!plugin.getSystemManager().isStackedBarrel(location))
-            dropAll = true;
+        int toAdd = 0;
+        int limit = barrel == null ? 0 : barrel.getStackLimit() - barrel.getStackAmount();
+        ItemStack barrelItem = barrel == null ? null : barrel.getBarrelItem(1);
 
         for (ItemStack itemStack : e.getInventory().getContents()) {
-            if (isSimilar(itemStack) && !dropAll) {
-                amount += (itemStack.getAmount() * ItemUtils.getSpawnerItemAmount(itemStack));
-            } else if (itemStack != null && itemStack.getType() != Material.AIR) {
-                ItemUtils.addItem(itemStack, e.getPlayer().getInventory(), stackedBarrel.getLocation());
-            }
-        }
+            if (itemStack == null || itemStack.getType() == Material.AIR)
+                continue;
 
-        if (amount != 0) {
-            int limit = stackedBarrel.getStackLimit();
-            int currentStackAmount = stackedBarrel.getStackAmount();
-            int increaseStackAmount = Math.min(amount, limit - currentStackAmount);
-
-            if (increaseStackAmount != amount) {
-                ItemStack toAdd = barrelItem.clone();
-                toAdd.setAmount(amount - increaseStackAmount);
-                ItemUtils.addItem(toAdd, e.getPlayer().getInventory(), stackedBarrel.getLocation());
-            }
-
-            if (EventsCaller.callBarrelPlaceInventoryEvent((Player) e.getPlayer(), stackedBarrel, increaseStackAmount)) {
-                int newStackAmount = stackedBarrel.increaseStackAmount(increaseStackAmount, true);
-                Locale.BARREL_UPDATE.send(e.getPlayer(), ItemUtils.getFormattedType(barrelItem), newStackAmount);
+            if (barrel != null && barrel.isCached() && barrelItem != null && isSimilarBarrelItem(itemStack, barrelItem)) {
+                int itemAmount = ItemUtils.getSpawnerItemAmount(itemStack) * itemStack.getAmount();
+                if (toAdd + itemAmount <= limit) {
+                    toAdd += itemAmount;
+                } else {
+                    int canAdd = Math.max(0, limit - toAdd);
+                    if (canAdd > 0) {
+                        toAdd += canAdd;
+                    }
+                    int leftOver = itemAmount - canAdd;
+                    if (leftOver > 0) {
+                        ItemStack refund = barrel.getBarrelItem(leftOver);
+                        ItemUtils.addItem(refund, player.getInventory(), player.getLocation());
+                    }
+                }
             } else {
-                ItemUtils.addItems(e.getInventory().getContents(), e.getPlayer().getInventory(), stackedBarrel.getLocation());
+                ItemUtils.addItem(itemStack, player.getInventory(), player.getLocation());
             }
         }
 
-        closeFlag = false;
-
-        ((WStackedBarrel) stackedBarrel).unlinkInventory(e.getInventory());
+        if (barrel != null && toAdd > 0) {
+            if (EventsCaller.callBarrelPlaceInventoryEvent(player, barrel, toAdd)) {
+                barrel.increaseStackAmount(toAdd, true);
+                Locale.BARREL_UPDATE.send(player, ItemUtils.getFormattedType(barrelItem), barrel.getStackAmount());
+            } else {
+                ItemStack refund = barrel.getBarrelItem(toAdd);
+                ItemUtils.addItem(refund, player.getInventory(), player.getLocation());
+            }
+        }
     }
 
     @Override
-    public Inventory getInventory() {
-        return inventory;
+    public void openMenu(Player player) {
+        if (this.inventory != null) {
+            player.openInventory(this.inventory);
+        }
     }
 
-    private boolean isSimilar(ItemStack barrelItem) {
-        return barrelItem != null && plugin.getProviders().canCreateBarrel(barrelItem) &&
-                this.barrelItem.getType() == barrelItem.getType() &&
-                (!ServerVersion.isLegacy() || this.barrelItem.getDurability() == barrelItem.getDurability());
+    private boolean isSimilarBarrelItem(ItemStack candidate, ItemStack barrelBase) {
+        if (candidate.getType() != barrelBase.getType())
+            return false;
+        ItemStack cleanCandidate = ItemUtils.setSpawnerItemAmount(candidate.clone(), 1);
+        if (cleanCandidate.hasItemMeta() && cleanCandidate.getItemMeta().hasDisplayName()) {
+            var meta = cleanCandidate.getItemMeta();
+            meta.displayName(null);
+            cleanCandidate.setItemMeta(meta);
+        }
+        return cleanCandidate.isSimilar(barrelBase);
     }
 
 }

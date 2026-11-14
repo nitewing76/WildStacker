@@ -1,31 +1,34 @@
 package com.bgsoftware.wildstacker.objects;
 
 import com.bgsoftware.wildstacker.WildStackerPlugin;
-import com.bgsoftware.wildstacker.api.enums.SpawnCause;
 import com.bgsoftware.wildstacker.api.enums.StackCheckResult;
 import com.bgsoftware.wildstacker.api.enums.StackResult;
 import com.bgsoftware.wildstacker.api.enums.UnstackResult;
 import com.bgsoftware.wildstacker.api.objects.StackedBarrel;
 import com.bgsoftware.wildstacker.api.objects.StackedObject;
 import com.bgsoftware.wildstacker.utils.GeneralUtils;
-import com.bgsoftware.wildstacker.utils.ServerVersion;
 import com.bgsoftware.wildstacker.utils.events.EventsCaller;
 import com.bgsoftware.wildstacker.utils.items.ItemUtils;
 import com.bgsoftware.wildstacker.utils.particles.ParticleWrapper;
 import com.bgsoftware.wildstacker.utils.threads.Executor;
-import com.bgsoftware.wildstacker.utils.threads.StackService;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
-import org.bukkit.entity.ArmorStand;
+import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.HumanEntity;
+import org.bukkit.entity.ItemDisplay;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.util.Transformation;
+import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,10 +37,12 @@ import java.util.stream.Stream;
 
 public final class WStackedBarrel extends WStackedHologramObject<Block> implements StackedBarrel {
 
+    private static final LegacyComponentSerializer SECTION_SERIALIZER = LegacyComponentSerializer.legacySection();
+
     private final List<Inventory> linkedInventories = new ArrayList<>();
 
     private final ItemStack barrelItem;
-    private ArmorStand blockDisplay;
+    private Display blockDisplay;
 
     public WStackedBarrel(Block block, ItemStack itemStack) {
         this(block, itemStack, 1);
@@ -45,8 +50,9 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
 
     public WStackedBarrel(Block block, ItemStack itemStack, int stackAmount) {
         super(block, stackAmount);
-        this.barrelItem = itemStack;
-        setCachedDisplayName(ItemUtils.getFormattedType(barrelItem));
+        this.barrelItem = itemStack == null ? new ItemStack(Material.AIR) : itemStack.clone();
+        this.barrelItem.setAmount(1);
+        setCachedDisplayName(ItemUtils.getFormattedType(this.barrelItem));
     }
 
     public static StackedBarrel of(Block block) {
@@ -69,48 +75,64 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
 
     @Override
     public short getData() {
-        return barrelItem.getDurability();
+        if (barrelItem.hasItemMeta() && barrelItem.getItemMeta() instanceof Damageable damageable) {
+            return (short) damageable.getDamage();
+        }
+        return 0;
     }
 
     @Override
     public void createDisplayBlock() {
+        if (!Bukkit.isPrimaryThread()) {
+            Executor.sync(this::createDisplayBlock);
+            return;
+        }
+
         Location location = getLocation();
+        World world = location.getWorld();
 
         removeDisplayBlock();
 
-        if (location.getBlock().getType() != Material.CAULDRON)
+        if (world == null || (location.getBlock().getType() != Material.CAULDRON && location.getBlock().getType() != Material.WATER_CAULDRON))
             return;
 
-        this.blockDisplay = plugin.getNMSEntities().createEntity(location.add(0.5, 0, 0.5),
-                ArmorStand.class, SpawnCause.CUSTOM, entity -> {
-                    ArmorStand armorStand = (ArmorStand) entity;
-                    armorStand.setVisible(false);
-                    armorStand.setSmall(true);
-                    armorStand.setGravity(false);
-                    armorStand.setHelmet(barrelItem);
-                    plugin.getNMSEntities().setCustomName(armorStand, "BlockDisplay");
-                    plugin.getNMSEntities().setCustomNameVisible(armorStand, false);
-                    return true;
-                }, null);
+        if (barrelItem.getType().isAir())
+            return;
+
+        int viewRangeBlocks = plugin.getSettings().cmiHologramViewRange;
+        float viewRangeMultiplier = Math.max(0.1F, viewRangeBlocks / 64.0F);
+        Location displayLocation = location.getBlock().getLocation().add(0.5, 0.55, 0.5);
+
+        this.blockDisplay = world.spawn(displayLocation, ItemDisplay.class, display -> {
+            display.setPersistent(false);
+            display.setItemStack(barrelItem.clone());
+            display.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.FIXED);
+            display.setViewRange(viewRangeMultiplier);
+            display.setTransformation(new Transformation(
+                    new Vector3f(0.0F, 0.0F, 0.0F),
+                    new AxisAngle4f(0.0F, 0.0F, 0.0F, 1.0F),
+                    new Vector3f(0.55F, 0.55F, 0.55F),
+                    new AxisAngle4f(0.0F, 0.0F, 0.0F, 1.0F)
+            ));
+        });
     }
 
     @Override
     public void removeDisplayBlock() {
-        ArmorStand blockDisplay = this.blockDisplay;
-        if (blockDisplay == null)
+        Display display = this.blockDisplay;
+        if (display == null)
             return;
 
         this.blockDisplay = null;
 
-        if (ServerVersion.isAtLeast(ServerVersion.v1_17) && !Bukkit.isPrimaryThread()) {
-            Executor.sync(blockDisplay::remove);
-        } else {
-            blockDisplay.remove();
+        if (!Bukkit.isPrimaryThread()) {
+            Executor.sync(display::remove);
+        } else if (display.isValid()) {
+            display.remove();
         }
     }
 
-    @Override
-    public ArmorStand getDisplayBlock() {
+    public Display getDisplayBlock() {
         return blockDisplay;
     }
 
@@ -123,13 +145,14 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
             itemStack.setAmount(1);
 
             ItemMeta itemMeta = itemStack.getItemMeta();
-            itemMeta.setDisplayName(WildStackerPlugin.getPlugin().getSettings().giveItemName
-                    .replace("{0}", amount + "")
-                    .replace("{1}", ItemUtils.getFormattedType(new ItemStack(getType())))
-                    .replace("{2}", "Barrel")
-            );
-
-            itemStack.setItemMeta(itemMeta);
+            if (itemMeta != null) {
+                String formattedName = WildStackerPlugin.getPlugin().getSettings().giveItemName
+                        .replace("{0}", String.valueOf(amount))
+                        .replace("{1}", ItemUtils.getFormattedType(new ItemStack(getType())))
+                        .replace("{2}", "Barrel");
+                itemMeta.displayName(SECTION_SERIALIZER.deserialize(formattedName));
+                itemStack.setItemMeta(itemMeta);
+            }
         } else {
             itemStack.setAmount(amount);
         }
@@ -188,7 +211,6 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
         }
 
         plugin.getSystemManager().removeStackObject(this);
-
         plugin.getDataHandler().deleteBarrel(getLocation());
 
         removeHologram();
@@ -196,9 +218,7 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
 
         List<HumanEntity> viewers = new ArrayList<>();
         linkedInventories.forEach(i -> viewers.addAll(i.getViewers()));
-
         viewers.forEach(HumanEntity::closeInventory);
-
         linkedInventories.clear();
     }
 
@@ -211,7 +231,7 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
 
         String customName = plugin.getSettings().barrelsCustomName;
 
-        if (customName.isEmpty())
+        if (customName == null || customName.isEmpty())
             return;
 
         int amount = getStackAmount();
@@ -222,13 +242,13 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
         }
 
         customName = plugin.getSettings().barrelsNameBuilder.build(this);
-        setHologramName(customName, true);
+        setHologramName(customName, false);
     }
 
     @Override
-    public StackCheckResult runStackCheck(StackedObject stackedObject) {
+    public StackCheckResult runStackCheck(StackedObject<?> stackedObject) {
         if (!plugin.getSettings().barrelsStackingEnabled)
-            return StackCheckResult.NOT_ENABLED;
+            return StackCheckResult.BLACKLISTED;
 
         return super.runStackCheck(stackedObject);
     }
@@ -273,10 +293,7 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
     }
 
     @Override
-    public StackResult runStack(StackedObject stackedObject) {
-        if (!StackService.canStackFromThread())
-            return StackResult.THREAD_CATCHER;
-
+    public StackResult runStack(StackedObject<?> stackedObject) {
         if (runStackCheck(stackedObject) != StackCheckResult.SUCCESS)
             return StackResult.NOT_SIMILAR;
 
@@ -308,9 +325,9 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
     }
 
     @Override
-    public boolean isSimilar(StackedObject stackedObject) {
-        return stackedObject instanceof StackedBarrel && getType() == ((StackedBarrel) stackedObject).getType() &&
-                getData() == ((StackedBarrel) stackedObject).getData();
+    public boolean isSimilar(StackedObject<?> stackedObject) {
+        return stackedObject instanceof StackedBarrel other &&
+                getType() == other.getType() && getData() == other.getData();
     }
 
     @Override
@@ -334,7 +351,7 @@ public final class WStackedBarrel extends WStackedHologramObject<Block> implemen
 
     @Override
     public boolean equals(Object obj) {
-        return obj instanceof StackedBarrel ? getLocation().equals(((StackedBarrel) obj).getLocation()) : super.equals(obj);
+        return obj instanceof StackedBarrel other ? getLocation().equals(other.getLocation()) : super.equals(obj);
     }
 
     @Override

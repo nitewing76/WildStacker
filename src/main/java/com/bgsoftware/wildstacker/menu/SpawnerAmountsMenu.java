@@ -1,17 +1,16 @@
 package com.bgsoftware.wildstacker.menu;
 
-import com.bgsoftware.common.config.CommentedConfiguration;
 import com.bgsoftware.wildstacker.Locale;
 import com.bgsoftware.wildstacker.api.objects.StackedSpawner;
 import com.bgsoftware.wildstacker.listeners.SpawnersListener;
-import com.bgsoftware.wildstacker.objects.WStackedSpawner;
 import com.bgsoftware.wildstacker.utils.events.EventsCaller;
 import com.bgsoftware.wildstacker.utils.files.FileUtils;
 import com.bgsoftware.wildstacker.utils.files.SoundWrapper;
 import com.bgsoftware.wildstacker.utils.items.ItemUtils;
-import com.bgsoftware.wildstacker.utils.legacy.Materials;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -50,65 +49,59 @@ public final class SpawnerAmountsMenu extends WildMenu {
         if (!file.exists())
             FileUtils.saveResource("menus/spawner-amounts.yml");
 
-        CommentedConfiguration cfg = CommentedConfiguration.loadConfiguration(file);
-
-        try {
-            cfg.syncWithConfig(file, FileUtils.getResource("menus/spawner-amounts.yml"), IGNORED_CONFIG_PATHS);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
+        YamlConfiguration cfg = YamlConfiguration.loadConfiguration(file);
 
         Map<Character, List<Integer>> charSlots = FileUtils.loadGUI(spawnerAmountsMenu, "spawner-amounts.yml", cfg);
-        Map<Integer, Integer> depositSpawners = new HashMap<>();
-        Map<Integer, Integer> withdrawSpawners = new HashMap<>();
+        Map<Integer, Integer> depositMap = new HashMap<>();
+        Map<Integer, Integer> withdrawMap = new HashMap<>();
 
-        if (!charSlots.isEmpty()) {
-            for (String itemChar : cfg.getConfigurationSection("items").getKeys(false)) {
+        ConfigurationSection itemsSection = cfg.getConfigurationSection("items");
+        if (!charSlots.isEmpty() && itemsSection != null) {
+            for (String itemChar : itemsSection.getKeys(false)) {
                 if (cfg.contains("items." + itemChar + ".deposit")) {
                     List<Integer> slots = charSlots.get(itemChar.toCharArray()[0]);
                     if (slots != null)
-                        slots.forEach(slot -> depositSpawners.put(slot, cfg.getInt("items." + itemChar + ".deposit")));
+                        slots.forEach(slot -> depositMap.put(slot, cfg.getInt("items." + itemChar + ".deposit")));
                 } else if (cfg.contains("items." + itemChar + ".withdraw")) {
                     List<Integer> slots = charSlots.get(itemChar.toCharArray()[0]);
                     if (slots != null)
-                        slots.forEach(slot -> withdrawSpawners.put(slot, cfg.getInt("items." + itemChar + ".withdraw")));
+                        slots.forEach(slot -> withdrawMap.put(slot, cfg.getInt("items." + itemChar + ".withdraw")));
                 }
             }
         }
 
-        SpawnerAmountsMenu.depositSpawners = depositSpawners;
-        SpawnerAmountsMenu.withdrawSpawners = withdrawSpawners;
+        SpawnerAmountsMenu.depositSpawners = depositMap;
+        SpawnerAmountsMenu.withdrawSpawners = withdrawMap;
         SpawnerAmountsMenu.successSound = FileUtils.getSound(cfg.getConfigurationSection("success-sound"));
         SpawnerAmountsMenu.failureSound = FileUtils.getSound(cfg.getConfigurationSection("failure-sound"));
     }
 
     @Override
     public void onPlayerClick(InventoryClickEvent e) {
-        StackedSpawner stackedSpawner = this.stackedSpawner.get();
+        StackedSpawner spawner = this.stackedSpawner.get();
 
-        if (stackedSpawner == null) {
+        if (spawner == null) {
             e.getWhoClicked().closeInventory();
             return;
         }
 
-        if (handleBreak(e, stackedSpawner))
+        if (handleBreak(e, spawner))
             return;
 
-        handlePlace(e, stackedSpawner);
+        handlePlace(e, spawner);
     }
 
     @Override
     public void onMenuClose(InventoryCloseEvent e) {
-
     }
 
-    private boolean handleBreak(InventoryClickEvent e, StackedSpawner stackedSpawner) {
+    private boolean handleBreak(InventoryClickEvent e, StackedSpawner spawner) {
         Integer withdrawAmount = withdrawSpawners.get(e.getRawSlot());
 
         if (withdrawAmount == null)
             return false;
 
-        withdrawAmount = Math.min(stackedSpawner.getStackAmount(), withdrawAmount);
+        withdrawAmount = Math.min(spawner.getStackAmount(), withdrawAmount);
 
         if (withdrawAmount <= 0) {
             if (failureSound != null)
@@ -116,97 +109,106 @@ public final class SpawnerAmountsMenu extends WildMenu {
             return true;
         }
 
-        SoundWrapper soundToPlay = SpawnersListener.handleSpawnerBreak(plugin, stackedSpawner, withdrawAmount,
+        SoundWrapper soundToPlay = SpawnersListener.handleSpawnerBreak(plugin, spawner, withdrawAmount,
                 (Player) e.getWhoClicked(), true) ? successSound : failureSound;
 
         if (soundToPlay != null)
             soundToPlay.playSound(e.getWhoClicked());
 
-        if (stackedSpawner.getStackAmount() <= 0)
+        if (spawner.getStackAmount() <= 0)
             e.getWhoClicked().closeInventory();
 
         return true;
     }
 
-    private void handlePlace(InventoryClickEvent e, StackedSpawner stackedSpawner) {
+    private void handlePlace(InventoryClickEvent e, StackedSpawner spawner) {
         Integer depositAmount = depositSpawners.get(e.getRawSlot());
 
         if (depositAmount == null)
             return;
 
-        if (!stackedSpawner.isCached()) {
+        if (!spawner.isCached()) {
             if (failureSound != null)
                 failureSound.playSound(e.getWhoClicked());
             return;
         }
 
-        int limit = stackedSpawner.getStackLimit();
+        Player player = (Player) e.getWhoClicked();
+        EntityType spawnerType = spawner.getSpawnedType();
+        Inventory playerInventory = player.getInventory();
+        int currentStackAmount = spawner.getStackAmount();
+        int spawnerStackLimit = spawner.getStackLimit();
 
-        if (stackedSpawner.getStackAmount() + depositAmount > limit)
-            depositAmount = limit - stackedSpawner.getStackAmount();
+        Map<Integer, ItemStack> itemsToRemove = new LinkedHashMap<>();
 
-        Map<Integer, Integer> itemsToRemove = new LinkedHashMap<>();
-        Inventory inventory = e.getWhoClicked().getInventory();
+        int toAdd = 0;
 
-        if (e.getWhoClicked().getGameMode() != GameMode.CREATIVE) {
-            int amount = 0;
+        if (player.getGameMode() == GameMode.CREATIVE) {
+            toAdd = Math.min(spawnerStackLimit - currentStackAmount, depositAmount);
+        } else {
+            for (int i = 0; i < playerInventory.getSize(); i++) {
+                ItemStack itemStack = playerInventory.getItem(i);
 
-            EntityType spawnerEntityType = stackedSpawner.getSpawnedType();
-            int upgradeId = stackedSpawner.isDefaultUpgrade() ? -1 : ((WStackedSpawner) stackedSpawner).getUpgradeId();
-
-            for (int i = 0; i < inventory.getSize(); i++) {
-                ItemStack itemStack = inventory.getItem(i);
-
-                if (itemStack == null || itemStack.getType() != Materials.SPAWNER.toBukkitType() ||
-                        plugin.getProviders().getSpawnersProvider().getSpawnerType(itemStack) != spawnerEntityType ||
-                        ItemUtils.getSpawnerUpgrade(itemStack) != upgradeId)
+                if (itemStack == null || itemStack.getType() != Material.SPAWNER)
                     continue;
 
-                int itemAmount = ItemUtils.getSpawnerItemAmount(itemStack);
-                int itemsToAdd = itemStack.getAmount();
+                if (spawnerType != ItemUtils.getSpawnerItemEntityType(itemStack))
+                    continue;
 
-                if ((itemAmount * itemsToAdd) + amount > depositAmount) {
-                    itemsToAdd = (depositAmount - amount) / itemAmount;
+                int itemAmount = ItemUtils.getSpawnerItemAmount(itemStack) * itemStack.getAmount();
 
-                    if (itemsToAdd <= 0)
-                        continue;
-                }
+                if (toAdd + itemAmount > depositAmount)
+                    itemAmount = depositAmount - toAdd;
 
-                itemsToRemove.put(i, itemsToAdd);
-                amount += (itemAmount * itemsToAdd);
+                if (currentStackAmount + toAdd + itemAmount > spawnerStackLimit)
+                    itemAmount = (spawnerStackLimit - currentStackAmount - toAdd);
 
-                if (amount >= depositAmount)
+                if (itemAmount <= 0)
                     break;
+
+                toAdd += itemAmount;
+                itemsToRemove.put(i, itemStack);
             }
-
-            depositAmount = Math.min(depositAmount, amount);
         }
 
-        if (depositAmount <= 0) {
+        if (toAdd <= 0 || !EventsCaller.callSpawnerPlaceInventoryEvent(player, spawner, toAdd)) {
             if (failureSound != null)
                 failureSound.playSound(e.getWhoClicked());
             return;
         }
 
-        if (!EventsCaller.callSpawnerPlaceInventoryEvent((Player) e.getWhoClicked(), stackedSpawner, depositAmount)) {
-            if (failureSound != null)
-                failureSound.playSound(e.getWhoClicked());
-            return;
-        }
-
-        stackedSpawner.increaseStackAmount(depositAmount, true);
-        Locale.SPAWNER_UPDATE.send(e.getWhoClicked(), stackedSpawner.getStackAmount());
+        spawner.increaseStackAmount(toAdd, true);
+        Locale.SPAWNER_UPDATE.send(player, spawner.getStackAmount());
 
         if (successSound != null)
             successSound.playSound(e.getWhoClicked());
 
-        // Remove items from inventory
-        for (Map.Entry<Integer, Integer> entry : itemsToRemove.entrySet()) {
-            ItemStack currentItem = inventory.getItem(entry.getKey());
-            if (currentItem.getAmount() == entry.getValue())
-                inventory.setItem(entry.getKey(), new ItemStack(Material.AIR));
-            else
-                currentItem.setAmount(currentItem.getAmount() - entry.getValue());
+        int leftToRemove = toAdd;
+
+        for (Map.Entry<Integer, ItemStack> itemEntry : itemsToRemove.entrySet()) {
+            int slot = itemEntry.getKey();
+            ItemStack itemStack = itemEntry.getValue();
+            int itemAmount = ItemUtils.getSpawnerItemAmount(itemStack) * itemStack.getAmount();
+
+            if (itemAmount <= leftToRemove) {
+                playerInventory.setItem(slot, new ItemStack(Material.AIR));
+                leftToRemove -= itemAmount;
+            } else {
+                if (itemStack.getAmount() == 1) {
+                    playerInventory.setItem(slot, spawner.getDropItem(itemAmount - leftToRemove));
+                } else {
+                    int itemsToTake = leftToRemove / ItemUtils.getSpawnerItemAmount(itemStack);
+                    int leftOvers = leftToRemove % ItemUtils.getSpawnerItemAmount(itemStack);
+                    ItemStack clone = itemStack.clone();
+                    clone.setAmount(clone.getAmount() - itemsToTake - (leftOvers > 0 ? 1 : 0));
+                    playerInventory.setItem(slot, clone);
+                    if (leftOvers > 0) {
+                        ItemUtils.addItem(spawner.getDropItem(ItemUtils.getSpawnerItemAmount(itemStack) - leftOvers),
+                                playerInventory, spawner.getLocation());
+                    }
+                }
+                break;
+            }
         }
     }
 

@@ -9,7 +9,6 @@ depend:
   - CMI
 
 softdepend:
-  - Vault
   - EpicHoppers
 
 commands:

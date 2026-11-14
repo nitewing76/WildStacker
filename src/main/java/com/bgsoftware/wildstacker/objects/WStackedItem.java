@@ -1,32 +1,31 @@
 package com.bgsoftware.wildstacker.objects;
 
-import com.bgsoftware.wildstacker.api.enums.EntityFlag;
 import com.bgsoftware.wildstacker.api.enums.StackCheckResult;
 import com.bgsoftware.wildstacker.api.enums.StackResult;
 import com.bgsoftware.wildstacker.api.enums.UnstackResult;
 import com.bgsoftware.wildstacker.api.objects.StackedItem;
 import com.bgsoftware.wildstacker.api.objects.StackedObject;
-import com.bgsoftware.wildstacker.utils.ServerVersion;
-import com.bgsoftware.wildstacker.utils.entity.EntitiesGetter;
-import com.bgsoftware.wildstacker.utils.entity.EntityStorage;
 import com.bgsoftware.wildstacker.utils.events.EventsCaller;
 import com.bgsoftware.wildstacker.utils.items.ItemUtils;
-import com.bgsoftware.wildstacker.utils.legacy.Materials;
 import com.bgsoftware.wildstacker.utils.particles.ParticleWrapper;
 import com.bgsoftware.wildstacker.utils.threads.Executor;
-import com.bgsoftware.wildstacker.utils.threads.StackService;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
-import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,13 +33,17 @@ import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 @SuppressWarnings("WeakerAccess")
-public final class WStackedItem extends WAsyncStackedObject<Item> implements StackedItem {
+public final class WStackedItem extends WStackedObject<Item> implements StackedItem {
 
     private static final Pattern DISPLAY_NAME_PLACEHOLDER = Pattern.compile(Pattern.quote("{0}"));
+    private static final LegacyComponentSerializer SECTION_SERIALIZER = LegacyComponentSerializer.legacySection();
+    private static final LegacyComponentSerializer AMPERSAND_SERIALIZER = LegacyComponentSerializer.legacyAmpersand();
+
+    public static final NamespacedKey KEY_REMOVED_ITEM = new NamespacedKey("wildstacker", "removed-item");
+    public static final NamespacedKey KEY_DROPPED_BY_PLAYER = new NamespacedKey("wildstacker", "dropped-by-player");
 
     private final UUID cachedUUID;
     private final int cachedEntityId;
-    private String mmoItemName = null;
 
     public WStackedItem(Item item) {
         this(item, item.getItemStack().getAmount());
@@ -48,13 +51,13 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
 
     public WStackedItem(Item item, int stackAmount) {
         super(item, stackAmount);
-        cachedUUID = item.getUniqueId();
-        cachedEntityId = item.getEntityId();
+        this.cachedUUID = item.getUniqueId();
+        this.cachedEntityId = item.getEntityId();
     }
 
     public static StackedItem of(Entity entity) {
-        if (entity instanceof Item)
-            return of((Item) entity);
+        if (entity instanceof Item item)
+            return of(item);
         throw new IllegalArgumentException("Only items can be applied to StackedItem object");
     }
 
@@ -69,10 +72,6 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
         return plugin.getSystemManager().getStackedItem(item);
     }
 
-    /*
-     * Item's methods
-     */
-
     @Override
     public World getWorld() {
         return object.getWorld();
@@ -86,6 +85,7 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
             itemStack.setAmount(Math.min(itemStack.getMaxStackSize(), newStackAmount));
             if (itemStack.getType() != Material.AIR && itemStack.getAmount() > 0)
                 object.setItemStack(itemStack);
+            ItemUtils.saveItemStackAmount(object, newStackAmount);
         }
     }
 
@@ -127,10 +127,6 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
         return plugin.getSettings().itemsDisabledWorlds.contains(object.getWorld().getName());
     }
 
-    /*
-     * StackedObject's methods
-     */
-
     @Override
     public boolean isCached() {
         return plugin.getSettings().itemsStackingEnabled && super.isCached();
@@ -140,53 +136,44 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
     public void remove() {
         plugin.getSystemManager().removeStackObject(this);
 
-        /* Items must be removed sync, otherwise they are not properly removed from chunks.
-        Also, in 1.17, the remove() function must be called sync. */
+        object.getPersistentDataContainer().set(KEY_REMOVED_ITEM, PersistentDataType.BYTE, (byte) 1);
         Executor.sync(object::remove);
-
-        EntityStorage.setMetadata(object, EntityFlag.REMOVED_ENTITY, true);
-        Executor.sync(() -> EntityStorage.clearMetadata(object), 100L);
     }
 
     @Override
     public void updateName() {
-        if (!plugin.getSettings().itemsStackingEnabled || !ItemUtils.canPickup(object) || ServerVersion.isLessThan(ServerVersion.v1_8))
+        if (!plugin.getSettings().itemsStackingEnabled || !ItemUtils.canPickup(object))
+            return;
+
+        String customNameTemplate = plugin.getSettings().itemsCustomName;
+        if (customNameTemplate == null || customNameTemplate.isEmpty())
             return;
 
         ItemStack itemStack = getItemStack();
-
-        boolean mmoItem = !plugin.getNMSAdapter().getTag(itemStack, "MMOITEMS_ITEM_TYPE", String.class, "NULL").equals("NULL");
-
-        if (mmoItem && mmoItemName == null)
-            mmoItemName = getCustomName();
-
-        String customName = plugin.getSettings().itemsCustomName;
-
-        if (customName.isEmpty())
-            return;
-
         int amount = getStackAmount();
-        boolean updateName = (mmoItem && mmoItemName != null) || plugin.getSettings().itemsUnstackedCustomName || amount > 1;
+        boolean shouldShowName = plugin.getSettings().itemsUnstackedCustomName || amount > 1;
 
-        if (updateName) {
-            String cachedDisplayName = mmoItem && mmoItemName != null ? mmoItemName : ItemUtils.getFormattedType(itemStack);
-            String displayName = itemStack.hasItemMeta() && itemStack.getItemMeta().hasDisplayName() ? itemStack.getItemMeta().getDisplayName() : cachedDisplayName;
+        String builtName = "";
+        if (shouldShowName) {
+            String cachedDisplayName = ItemUtils.getFormattedType(itemStack);
+            ItemMeta meta = itemStack.getItemMeta();
+            String displayName = (meta != null && meta.hasDisplayName() && meta.displayName() != null)
+                    ? SECTION_SERIALIZER.serialize(meta.displayName())
+                    : cachedDisplayName;
 
             if (plugin.getSettings().itemsDisplayEnabled)
                 cachedDisplayName = displayName;
 
             setCachedDisplayName(DISPLAY_NAME_PLACEHOLDER.matcher(cachedDisplayName).replaceAll(displayName));
-
-            customName = plugin.getSettings().itemsNameBuilder.build(this);
+            builtName = plugin.getSettings().itemsNameBuilder.build(this);
         }
 
-        String CUSTOM_NAME = customName;
-
+        final String finalName = builtName;
         Executor.sync(() -> {
-            if (updateName) {
-                setCustomName(CUSTOM_NAME);
+            if (shouldShowName) {
+                setCustomName(finalName);
             }
-            setCustomNameVisible(updateName);
+            setCustomNameVisible(shouldShowName);
         });
 
         if (saveData)
@@ -194,17 +181,16 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
     }
 
     @Override
-    public StackCheckResult runStackCheck(StackedObject stackedObject) {
+    public StackCheckResult runStackCheck(StackedObject<?> stackedObject) {
         if (!plugin.getSettings().itemsStackingEnabled)
-            return StackCheckResult.NOT_ENABLED;
+            return StackCheckResult.BLACKLISTED;
 
         StackCheckResult superResult = super.runStackCheck(stackedObject);
-
         if (superResult != StackCheckResult.SUCCESS)
             return superResult;
 
         if (!plugin.getSettings().itemsMaxPickupDelay && !ItemUtils.canPickup(object))
-            return StackCheckResult.PICKUP_DELAY_EXCEEDED;
+            return StackCheckResult.BLACKLISTED;
 
         if (isRemoved() || object.isDead())
             return StackCheckResult.ALREADY_DEAD;
@@ -212,19 +198,58 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
         StackedItem targetItem = (StackedItem) stackedObject;
 
         if (!plugin.getSettings().itemsMaxPickupDelay && !ItemUtils.canPickup(targetItem.getItem()))
-            return StackCheckResult.TARGET_PICKUP_DELAY_EXCEEDED;
+            return StackCheckResult.BLACKLISTED;
 
         if (((WStackedItem) targetItem).isRemoved() || targetItem.getItem().isDead())
-            return StackCheckResult.TARGET_ALREADY_DEAD;
+            return StackCheckResult.ALREADY_DEAD;
 
         return StackCheckResult.SUCCESS;
     }
 
     @Override
-    public StackResult runStack(StackedObject stackedObject) {
-        if (!StackService.canStackFromThread())
-            return StackResult.THREAD_CATCHER;
+    public Optional<Item> runStack() {
+        int range = getMergeRadius();
+        if (range <= 0 || getStackLimit() <= 1)
+            return Optional.empty();
 
+        Location itemLocation = getItem().getLocation();
+        World world = itemLocation.getWorld();
+        if (world == null)
+            return Optional.empty();
+
+        Collection<Item> nearbyItems = world.getNearbyEntitiesByType(Item.class, itemLocation, range, range, range, ItemUtils::isStackable);
+
+        for (Item entity : nearbyItems) {
+            if (entity.equals(this.object))
+                continue;
+
+            StackedItem targetItem = WStackedItem.ofBypass(entity);
+            if (runStackCheck(targetItem) == StackCheckResult.SUCCESS) {
+                StackResult stackResult = runStack(targetItem);
+                if (stackResult == StackResult.SUCCESS) {
+                    return Optional.of(targetItem.getItem());
+                }
+            }
+        }
+
+        updateName();
+        return Optional.empty();
+    }
+
+    @Override
+    public void runStackAsync(Consumer<Optional<Item>> result) {
+        if (!Bukkit.isPrimaryThread()) {
+            Executor.sync(() -> runStackAsync(result));
+            return;
+        }
+        Optional<Item> stacked = runStack();
+        if (result != null) {
+            result.accept(stacked);
+        }
+    }
+
+    @Override
+    public StackResult runStack(StackedObject<?> stackedObject) {
         if (runStackCheck(stackedObject) != StackCheckResult.SUCCESS)
             return StackResult.NOT_SIMILAR;
 
@@ -253,9 +278,9 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
     }
 
     @Override
-    public boolean isSimilar(StackedObject stackedObject) {
-        return stackedObject instanceof StackedItem && object.getItemStack()
-                .isSimilar(((StackedItem) stackedObject).getItem().getItemStack());
+    public boolean isSimilar(StackedObject<?> stackedObject) {
+        return stackedObject instanceof StackedItem target &&
+                object.getItemStack().isSimilar(target.getItem().getItemStack());
     }
 
     @Override
@@ -279,22 +304,27 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
 
     @Override
     public String getCustomName() {
-        return plugin.getNMSEntities().getCustomName(object);
+        Component customName = object.customName();
+        return customName == null ? "" : SECTION_SERIALIZER.serialize(customName);
     }
 
     @Override
     public void setCustomName(String customName) {
-        plugin.getNMSEntities().setCustomName(object, customName);
+        if (customName == null || customName.isEmpty()) {
+            object.customName(null);
+        } else if (customName.indexOf('\u00A7') != -1) {
+            object.customName(SECTION_SERIALIZER.deserialize(customName));
+        } else {
+            object.customName(AMPERSAND_SERIALIZER.deserialize(customName));
+        }
     }
 
-    @Override
     public boolean isCustomNameVisible() {
-        return plugin.getNMSEntities().isCustomNameVisible(object);
+        return object.isCustomNameVisible();
     }
 
-    @Override
     public void setCustomNameVisible(boolean visible) {
-        plugin.getNMSEntities().setCustomNameVisible(object, visible);
+        object.setCustomNameVisible(visible);
     }
 
     @Override
@@ -314,22 +344,24 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
 
     @Override
     public void giveItemStack(Inventory inventory) {
+        giveItemStack(inventory, null);
+    }
+
+    @Override
+    public void giveItemStack(PlayerInventory playerInventory, Location dropLocation) {
+        giveItemStack((Inventory) playerInventory, dropLocation);
+    }
+
+    private void giveItemStack(Inventory inventory, Location dropLocation) {
         if (isRemoved())
             return;
 
         ItemStack itemStack = getItemStack();
 
-        /*
-         * I am not using ItemUtil#addItem so it won't drop the leftovers
-         * (If it will, the leftovers will get stacked again - infinite loop)
-         */
-
-        int originalStackAmount = getStackAmount();
-
         int maxStackAmount = itemStack.getMaxStackSize();
         boolean inventoryFull = false;
 
-        if (maxStackAmount != 64 && !plugin.getSettings().itemsFixStackEnabled && !Materials.isShulkerBox(itemStack))
+        if (maxStackAmount != 64 && !plugin.getSettings().itemsFixStackEnabled && !ItemUtils.isShulkerBox(itemStack))
             maxStackAmount = 64;
 
         itemStack.setAmount(maxStackAmount);
@@ -342,9 +374,7 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
             }
         }
 
-        // Inventory is still not full, but there is still more items to add.
-        // However, there is less than a stack available to add.
-        if (!inventoryFull) {
+        if (!inventoryFull && getStackAmount() > 0) {
             int currentStackAmount = getStackAmount();
             itemStack.setAmount(currentStackAmount);
             int amountLeft = giveItem(inventory, itemStack.clone());
@@ -353,66 +383,18 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
 
         int finalStackAmount = getStackAmount();
 
-        if (finalStackAmount <= 0)
+        if (finalStackAmount <= 0) {
             remove();
-
-        int givenAmount = originalStackAmount - finalStackAmount;
-
-        if (givenAmount > 0 && inventory instanceof PlayerInventory) {
-            plugin.getProviders().notifyStackedItemListeners((Player) ((PlayerInventory) inventory).getHolder(),
-                    object, givenAmount);
+        } else if (dropLocation != null) {
+            ItemStack remaining = getItemStack();
+            remaining.setAmount(finalStackAmount);
+            remove();
+            ItemUtils.dropItem(remaining, dropLocation);
         }
     }
 
-    @Override
     public int getId() {
         return cachedEntityId;
-    }
-
-    /*
-     * StackedItem's methods
-     */
-
-    @Override
-    public void runStackAsync(Consumer<Optional<Item>> result) {
-        int range = getMergeRadius();
-
-        if (range <= 0 || getStackLimit() <= 1) {
-            if (result != null)
-                result.accept(Optional.empty());
-            return;
-        }
-
-        // Should be called sync due to collecting nearby entities
-        if (!Bukkit.isPrimaryThread()) {
-            Executor.sync(() -> runStackAsync(result));
-            return;
-        }
-
-        Location itemLocation = getItem().getLocation();
-        Optional<StackedItem> itemOptional = EntitiesGetter.getNearbyEntities(itemLocation, range, ItemUtils::isStackable)
-                .map(entity -> WStackedItem.ofBypass((Item) entity))
-                .filter(stackedItem -> runStackCheck(stackedItem) == StackCheckResult.SUCCESS)
-                .findFirst();
-
-        if (itemOptional.isPresent()) {
-            runStackAsync(itemOptional.get(), stackResult -> {
-                if (stackResult == StackResult.SUCCESS) {
-                    if (result != null)
-                        result.accept(itemOptional.map(StackedItem::getItem));
-                } else {
-                    updateName();
-
-                    if (result != null)
-                        result.accept(Optional.empty());
-                }
-            });
-        } else {
-            updateName();
-
-            if (result != null)
-                result.accept(Optional.empty());
-        }
     }
 
     @Override
@@ -422,7 +404,7 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
 
     @Override
     public boolean equals(Object obj) {
-        return obj instanceof StackedItem ? getUniqueId().equals(((StackedItem) obj).getUniqueId()) : super.equals(obj);
+        return obj instanceof StackedItem target ? getUniqueId().equals(target.getUniqueId()) : super.equals(obj);
     }
 
     @Override
@@ -431,15 +413,15 @@ public final class WStackedItem extends WAsyncStackedObject<Item> implements Sta
     }
 
     public boolean isRemoved() {
-        return EntityStorage.hasMetadata(object, EntityFlag.REMOVED_ENTITY);
+        return object.getPersistentDataContainer().has(KEY_REMOVED_ITEM, PersistentDataType.BYTE);
     }
 
     private int giveItem(Inventory inventory, ItemStack itemStack) {
         Map<Integer, ItemStack> additionalItems = inventory.addItem(itemStack);
 
-        if (Materials.isBucket(itemStack.getType()))
+        if (ItemUtils.isBucket(itemStack.getType()))
             ItemUtils.stackBucket(itemStack, inventory);
-        if (Materials.isSoup(itemStack))
+        if (ItemUtils.isSoup(itemStack))
             ItemUtils.stackStew(itemStack, inventory);
 
         if (additionalItems.isEmpty())

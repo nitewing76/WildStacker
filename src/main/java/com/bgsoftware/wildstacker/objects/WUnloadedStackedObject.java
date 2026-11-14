@@ -1,26 +1,32 @@
 package com.bgsoftware.wildstacker.objects;
 
 import com.bgsoftware.wildstacker.WildStackerPlugin;
+import com.bgsoftware.wildstacker.api.objects.StackedObject;
 import com.bgsoftware.wildstacker.api.objects.UnloadedStackedObject;
 import com.bgsoftware.wildstacker.utils.data.structures.Location2ObjectMap;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
 
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-
-@SuppressWarnings("WeakerAccess")
 public abstract class WUnloadedStackedObject implements UnloadedStackedObject, Location2ObjectMap.ILocationEntity {
 
-    protected static WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
-
-    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+    protected static final WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
 
     private final String worldName;
     private final int locX;
     private final int locY;
     private final int locZ;
     private int stackAmount;
+
+    protected WUnloadedStackedObject(StackedObject<?> stackedObject) {
+        this(
+                stackedObject.getWorld().getName(),
+                stackedObject.getLocation().getBlockX(),
+                stackedObject.getLocation().getBlockY(),
+                stackedObject.getLocation().getBlockZ(),
+                stackedObject.getStackAmount()
+        );
+    }
 
     protected WUnloadedStackedObject(String worldName, int locX, int locY, int locZ, int stackAmount) {
         this.worldName = worldName;
@@ -31,14 +37,11 @@ public abstract class WUnloadedStackedObject implements UnloadedStackedObject, L
     }
 
     @Override
-    @Deprecated
     public Location getLocation() {
-        World bukkitWorld = getWorld();
-        return new Location(bukkitWorld, this.locX, this.locY, this.locZ);
+        return new Location(getWorld(), this.locX, this.locY, this.locZ);
     }
 
     @Override
-    @Deprecated
     public World getWorld() {
         return Bukkit.getWorld(this.worldName);
     }
@@ -65,22 +68,12 @@ public abstract class WUnloadedStackedObject implements UnloadedStackedObject, L
 
     @Override
     public int getStackAmount() {
-        try {
-            lock.readLock().lock();
-            return stackAmount;
-        } finally {
-            lock.readLock().unlock();
-        }
+        return this.stackAmount;
     }
 
     @Override
     public void setStackAmount(int stackAmount, boolean updateName) {
-        try {
-            lock.writeLock().lock();
-            this.stackAmount = stackAmount;
-        } finally {
-            lock.writeLock().unlock();
-        }
+        this.stackAmount = stackAmount;
     }
 
     @Override

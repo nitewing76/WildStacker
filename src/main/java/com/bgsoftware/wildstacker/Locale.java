@@ -1,9 +1,9 @@
 package com.bgsoftware.wildstacker;
 
-import com.bgsoftware.common.config.CommentedConfiguration;
-import com.bgsoftware.wildstacker.utils.files.FileUtils;
-import org.bukkit.ChatColor;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.YamlConfiguration;
 
 import java.io.File;
 import java.util.HashMap;
@@ -12,7 +12,9 @@ import java.util.Map;
 @SuppressWarnings("WeakerAccess")
 public final class Locale {
 
-    private static final WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
+    private static final LegacyComponentSerializer AMPERSAND_SERIALIZER = LegacyComponentSerializer.legacyAmpersand();
+    private static final LegacyComponentSerializer SECTION_SERIALIZER = LegacyComponentSerializer.legacySection();
+
     private static final Map<String, Locale> localeMap = new HashMap<>();
 
     public static Locale BARREL_BREAK = new Locale("BARREL_BREAK");
@@ -85,6 +87,8 @@ public final class Locale {
     public static Locale OBJECT_SIMULATE_FAIL_RESULT = new Locale("OBJECT_SIMULATE_FAIL_RESULT");
     public static Locale UPGRADE_CURRENT = new Locale("UPGRADE_CURRENT");
     public static Locale UPGRADE_NEXT = new Locale("UPGRADE_NEXT");
+
+    private String rawMessage;
     private String message;
 
     private Locale(String identifier) {
@@ -92,24 +96,20 @@ public final class Locale {
     }
 
     public static void reload() {
+        WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
         WildStackerPlugin.log("Loading messages started...");
         long startTime = System.currentTimeMillis();
         int messagesAmount = 0;
         File file = new File(plugin.getDataFolder(), "lang.yml");
 
         if (!file.exists())
-            FileUtils.saveResource("lang.yml");
+            plugin.saveResource("lang.yml", false);
 
-        CommentedConfiguration cfg = CommentedConfiguration.loadConfiguration(file);
-
-        try {
-            cfg.syncWithConfig(file, plugin.getResource("lang.yml"));
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        }
+        YamlConfiguration cfg = YamlConfiguration.loadConfiguration(file);
 
         for (String identifier : localeMap.keySet()) {
-            localeMap.get(identifier).setMessage(ChatColor.translateAlternateColorCodes('&', cfg.getString(identifier, "")));
+            String raw = cfg.getString(identifier, "");
+            localeMap.get(identifier).setMessage(raw);
             messagesAmount++;
         }
 
@@ -118,15 +118,17 @@ public final class Locale {
     }
 
     public static void sendMessage(CommandSender sender, String message) {
-        sender.sendMessage(ChatColor.translateAlternateColorCodes('&', message));
+        if (sender != null && message != null && !message.isEmpty()) {
+            sender.sendMessage(AMPERSAND_SERIALIZER.deserialize(message));
+        }
     }
 
     public String getMessage(Object... objects) {
-        if (message != null && !message.equals("")) {
+        if (message != null && !message.isEmpty()) {
             String msg = message;
 
             for (int i = 0; i < objects.length; i++)
-                msg = msg.replace("{" + i + "}", objects[i].toString());
+                msg = msg.replace("{" + i + "}", String.valueOf(objects[i]));
 
             return msg;
         }
@@ -134,14 +136,32 @@ public final class Locale {
         return null;
     }
 
-    public void send(CommandSender sender, Object... objects) {
-        String message = getMessage(objects);
-        if (message != null && sender != null)
-            sender.sendMessage(message);
+    public Component getComponent(Object... objects) {
+        if (rawMessage != null && !rawMessage.isEmpty()) {
+            String msg = rawMessage;
+
+            for (int i = 0; i < objects.length; i++)
+                msg = msg.replace("{" + i + "}", String.valueOf(objects[i]));
+
+            return AMPERSAND_SERIALIZER.deserialize(msg);
+        }
+
+        return null;
     }
 
-    private void setMessage(String message) {
-        this.message = message;
+    public void send(CommandSender sender, Object... objects) {
+        Component component = getComponent(objects);
+        if (component != null && sender != null)
+            sender.sendMessage(component);
+    }
+
+    private void setMessage(String raw) {
+        this.rawMessage = raw == null ? "" : raw;
+        if (this.rawMessage.isEmpty()) {
+            this.message = "";
+        } else {
+            this.message = SECTION_SERIALIZER.serialize(AMPERSAND_SERIALIZER.deserialize(this.rawMessage));
+        }
     }
 
 }

@@ -1,15 +1,12 @@
 package com.bgsoftware.wildstacker.data;
 
-import com.bgsoftware.wildstacker.WildStackerPlugin;
 import com.bgsoftware.wildstacker.api.objects.StackedItem;
 import com.bgsoftware.wildstacker.objects.WStackedItem;
-import com.bgsoftware.wildstacker.utils.data.DataSerializer;
+import com.bgsoftware.wildstacker.utils.items.ItemUtils;
 
 import java.util.UUID;
 
 public class StackedItemStore extends AbstractEntityDataStore<StackedItem> {
-
-    private static final WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
 
     @Override
     protected boolean loadUnloadedInternal(UUID uuid, StackedItem stackedItem) {
@@ -28,22 +25,14 @@ public class StackedItemStore extends AbstractEntityDataStore<StackedItem> {
     }
 
     private void loadUnloadedFromCache(StackedItem stackedItem) {
-        String cachedData = DataSerializer.deserializeData(stackedItem.getCustomName());
-        if (!cachedData.isEmpty()) {
-            try {
-                stackedItem.setStackAmount(Integer.parseInt(cachedData), false);
-            } catch (Exception ignored) {
-            }
-
-            stackedItem.setCustomName(DataSerializer.stripData(stackedItem.getCustomName()));
-        } else {
-            plugin.getSystemManager().getDataSerializer().loadItem(stackedItem);
+        int loadedAmount = ItemUtils.loadItemStackAmount(stackedItem.getItem());
+        if (loadedAmount > 1) {
+            stackedItem.setStackAmount(loadedAmount, false);
         }
 
-        // We want to update the item's size if it's above max stack size.
-        // We do it here so item will not be saved.
-        if (stackedItem.getStackAmount() > stackedItem.getItemStack().getMaxStackSize())
+        if (stackedItem.getStackAmount() > stackedItem.getItemStack().getMaxStackSize()) {
             stackedItem.setStackAmount(stackedItem.getStackAmount(), false);
+        }
     }
 
     public static class Unloaded implements AbstractEntityDataStore.Unloaded<StackedItem> {

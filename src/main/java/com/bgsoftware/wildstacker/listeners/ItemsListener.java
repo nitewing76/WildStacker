@@ -1,25 +1,14 @@
 package com.bgsoftware.wildstacker.listeners;
 
-import com.bgsoftware.common.reflection.ReflectMethod;
 import com.bgsoftware.wildstacker.WildStackerPlugin;
-import com.bgsoftware.wildstacker.api.enums.EntityFlag;
 import com.bgsoftware.wildstacker.api.objects.StackedItem;
-import com.bgsoftware.wildstacker.listeners.events.EventsListener;
-import com.bgsoftware.wildstacker.objects.WStackedEntity;
 import com.bgsoftware.wildstacker.objects.WStackedItem;
-import com.bgsoftware.wildstacker.utils.ServerVersion;
-import com.bgsoftware.wildstacker.utils.entity.EntitiesGetter;
-import com.bgsoftware.wildstacker.utils.entity.EntityStorage;
-import com.bgsoftware.wildstacker.utils.entity.EntityUtils;
 import com.bgsoftware.wildstacker.utils.items.ItemUtils;
 import com.bgsoftware.wildstacker.utils.threads.Executor;
 import org.bukkit.Chunk;
 import org.bukkit.block.Hopper;
-import org.bukkit.entity.Chicken;
-import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Item;
-import org.bukkit.entity.LivingEntity;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -29,9 +18,10 @@ import org.bukkit.event.entity.ItemMergeEvent;
 import org.bukkit.event.entity.ItemSpawnEvent;
 import org.bukkit.event.inventory.InventoryPickupItemEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
-import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -42,30 +32,15 @@ import java.util.Map;
 @SuppressWarnings("unused")
 public final class ItemsListener implements Listener {
 
-    private static final ReflectMethod<Void> ENTITY_EQUIPMENT_SET_ITEM_IN_MAIN_HAND = new ReflectMethod<>(EntityEquipment.class, "setItemInMainHand", ItemStack.class);
-
     private final WildStackerPlugin plugin;
 
     public ItemsListener(WildStackerPlugin plugin) {
         this.plugin = plugin;
-
-        if (ServerVersion.isAtLeast(ServerVersion.v1_8))
-            plugin.getServer().getPluginManager().registerEvents(new MergeListener(plugin), plugin);
-
-        try {
-            Class.forName("org.bukkit.event.block.BlockDropItemEvent");
-            plugin.getServer().getPluginManager().registerEvents(new BlockDropItemListener(plugin), plugin);
-        } catch (Exception ignored) {
-        }
-
-        EventsListener.registerArmadilloScuteDropListener(this::onArmadilloScuteDrop);
-        EventsListener.registerChickenEggLayListener(this::onChickenEggLay);
-        EventsListener.registerTurtleScuteDropListener(this::onTurtleScuteDrop);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onItemSpawn(ItemSpawnEvent e) {
-        if (!plugin.getSettings().itemsStackingEnabled || e.getEntity().getType() != EntityType.DROPPED_ITEM)
+        if (!plugin.getSettings().itemsStackingEnabled || e.getEntity().getType() != EntityType.ITEM)
             return;
 
         StackedItem stackedItem = WStackedItem.ofBypass(e.getEntity());
@@ -73,107 +48,120 @@ public final class ItemsListener implements Listener {
         if (!stackedItem.isCached())
             return;
 
-        EntitiesGetter.handleEntitySpawn(e.getEntity());
-
         int limit = stackedItem.getStackLimit();
 
         if (stackedItem.getStackAmount() > limit) {
+            int overLimit = stackedItem.getStackAmount() - limit;
             ItemStack cloned = stackedItem.getItemStack().clone();
-            cloned.setAmount(cloned.getAmount() - limit);
+            cloned.setAmount(Math.min(cloned.getMaxStackSize(), overLimit));
             stackedItem.setStackAmount(limit, true);
-            StackedItem spawnedItem = plugin.getSystemManager().spawnItemWithAmount(e.getEntity().getLocation(), cloned);
-            spawnedItem.getItem().setPickupDelay(40);
+            Item spawnedItem = plugin.getSystemManager().spawnItemWithAmount(e.getEntity().getLocation(), cloned, overLimit);
+            if (spawnedItem != null) {
+                spawnedItem.setPickupDelay(40);
+            }
         }
 
-        stackedItem.runStackAsync(optionalItem -> {
+        ((WStackedItem) stackedItem).runStackAsync(optionalItem -> {
             if (optionalItem.isPresent())
                 return;
 
             Executor.sync(() -> {
-                if (EntityStorage.hasMetadata(e.getEntity(), EntityFlag.DROPPED_BY_PLAYER))
-                    EntityStorage.removeMetadata(e.getEntity(), EntityFlag.DROPPED_BY_PLAYER);
-                else if (isChunkLimit(e.getLocation().getChunk()))
+                PersistentDataContainer pdc = e.getEntity().getPersistentDataContainer();
+                if (pdc.has(WStackedItem.KEY_DROPPED_BY_PLAYER, PersistentDataType.BYTE)) {
+                    pdc.remove(WStackedItem.KEY_DROPPED_BY_PLAYER);
+                } else if (isChunkLimit(e.getLocation().getChunk())) {
                     stackedItem.remove();
+                }
             });
         });
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerItemDrop(PlayerDropItemEvent e) {
-        EntityStorage.setMetadata(e.getItemDrop(), EntityFlag.DROPPED_BY_PLAYER, true);
+        e.getItemDrop().getPersistentDataContainer().set(WStackedItem.KEY_DROPPED_BY_PLAYER, PersistentDataType.BYTE, (byte) 1);
     }
 
-    //This method will be fired even if stacking-drops is disabled.
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onItemDespawn(ItemDespawnEvent e) {
         if (ItemUtils.isStackable(e.getEntity()))
             WStackedItem.of(e.getEntity()).remove();
     }
 
-    //This method will be fired even if stacking-drops is disabled.
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInventoryPickup(InventoryPickupItemEvent e) {
         if (!ItemUtils.isStackable(e.getItem()))
             return;
 
-        // We don't want removed items to be picked up.
-        if (EntityStorage.hasMetadata(e.getItem(), EntityFlag.REMOVED_ENTITY)) {
-            e.getItem().remove(); // Remove it again, synchronized.
+        StackedItem stackedItem = WStackedItem.of(e.getItem());
+        if (((WStackedItem) stackedItem).isRemoved()) {
+            e.getItem().remove();
             e.setCancelled(true);
             return;
         }
-
-        StackedItem stackedItem = WStackedItem.of(e.getItem());
 
         if (stackedItem.getStackAmount() > 1) {
             e.setCancelled(true);
             stackedItem.giveItemStack(e.getInventory());
             InventoryHolder inventoryHolder = e.getInventory().getHolder();
-            if (inventoryHolder instanceof Hopper)
-                ((Hopper) inventoryHolder).getBlock().getState().update();
+            if (inventoryHolder instanceof Hopper hopper)
+                hopper.getBlock().getState().update();
         }
     }
 
-    private void onArmadilloScuteDrop(Entity armadillo, Item armadilloScute) {
-        if (!plugin.getSettings().multiplyArmadilloScutes || !EntityUtils.isStackable(armadillo)) {
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onItemMerge(ItemMergeEvent e) {
+        if (!plugin.getSettings().itemsStackingEnabled || !ItemUtils.isStackable(e.getEntity()) ||
+                !ItemUtils.isStackable(e.getTarget()))
             return;
-        }
 
-        int stackAmount = WStackedEntity.of(armadillo).getStackAmount();
+        StackedItem stackedItem = WStackedItem.ofBypass(e.getEntity());
 
-        if (stackAmount > 1) {
-            ItemStack armadilloScuteItem = armadilloScute.getItemStack();
-            armadilloScuteItem.setAmount(armadilloScuteItem.getAmount() * stackAmount);
-            armadilloScute.setItemStack(armadilloScuteItem);
-        }
+        if (!stackedItem.isCached())
+            return;
+
+        e.setCancelled(true);
+
+        Executor.sync(() -> {
+            if (e.getEntity().isValid() && e.getTarget().isValid()) {
+                StackedItem targetItem = WStackedItem.ofBypass(e.getTarget());
+                stackedItem.runStackAsync(targetItem, null);
+            }
+        }, 5L);
     }
 
-    private void onChickenEggLay(Chicken chicken, Item egg) {
-        if (!plugin.getSettings().multiplyChickenEggs || !EntityUtils.isStackable(chicken)) {
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockDropItem(BlockDropItemEvent e) {
+        if (!plugin.getSettings().itemsStackingEnabled)
             return;
+
+        Map<ItemStack, Item> itemsMap = new HashMap<>();
+        List<Item> itemsToRemove = new ArrayList<>();
+
+        for (Item item : e.getItems()) {
+            ItemStack clone = item.getItemStack().clone();
+            clone.setAmount(1);
+
+            StackedItem stackedItem = WStackedItem.ofBypass(item);
+
+            if (stackedItem.isCached()) {
+                Item currentItem = itemsMap.get(clone);
+
+                if (currentItem == null) {
+                    itemsMap.put(clone, item);
+                } else {
+                    itemsToRemove.add(item);
+                    int combinedAmount = ItemUtils.loadItemStackAmount(currentItem) + ItemUtils.loadItemStackAmount(item);
+                    ItemStack updatedStack = currentItem.getItemStack().clone();
+                    updatedStack.setAmount(Math.min(updatedStack.getMaxStackSize(), combinedAmount));
+                    currentItem.setItemStack(updatedStack);
+                    ItemUtils.saveItemStackAmount(currentItem, combinedAmount);
+                }
+
+                plugin.getSystemManager().removeStackObject(stackedItem);
+            }
         }
 
-        int stackAmount = WStackedEntity.of(chicken).getStackAmount();
-
-        if (stackAmount > 1) {
-            ItemStack eggItem = egg.getItemStack();
-            eggItem.setAmount(eggItem.getAmount() * stackAmount);
-            egg.setItemStack(eggItem);
-        }
-    }
-
-    private void onTurtleScuteDrop(Entity turtle, Item turtleScute) {
-        if (!plugin.getSettings().multiplyTurtleScutes || !EntityUtils.isStackable(turtle)) {
-            return;
-        }
-
-        int stackAmount = WStackedEntity.of(turtle).getStackAmount();
-
-        if (stackAmount > 1) {
-            ItemStack turtleScuteItem = turtleScute.getItemStack();
-            turtleScuteItem.setAmount(turtleScuteItem.getAmount() * stackAmount);
-            turtleScute.setItemStack(turtleScuteItem);
-        }
+        e.getItems().removeAll(itemsToRemove);
     }
 
     private boolean isChunkLimit(Chunk chunk) {
@@ -183,87 +171,6 @@ public final class ItemsListener implements Listener {
             return false;
 
         return (int) Arrays.stream(chunk.getEntities()).filter(entity -> entity instanceof Item).count() > chunkLimit;
-    }
-
-    private void setItemInHand(LivingEntity entity, ItemStack itemStack) {
-        if (ENTITY_EQUIPMENT_SET_ITEM_IN_MAIN_HAND.isValid()) {
-            ENTITY_EQUIPMENT_SET_ITEM_IN_MAIN_HAND.invoke(entity.getEquipment(), itemStack);
-        } else {
-            entity.getEquipment().setItemInHand(itemStack);
-        }
-    }
-
-    private static class MergeListener implements Listener {
-
-        private final WildStackerPlugin plugin;
-
-        private MergeListener(WildStackerPlugin plugin) {
-            this.plugin = plugin;
-        }
-
-        @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-        public void onItemMerge(ItemMergeEvent e) {
-            if (!plugin.getSettings().itemsStackingEnabled || !ItemUtils.isStackable(e.getEntity()) ||
-                    !ItemUtils.isStackable(e.getTarget()))
-                return;
-
-            StackedItem stackedItem = WStackedItem.ofBypass(e.getEntity());
-
-            if (!stackedItem.isCached())
-                return;
-
-            //We are overriding the merge system
-            e.setCancelled(true);
-
-            Executor.sync(() -> {
-                if (e.getEntity().isValid() && e.getTarget().isValid()) {
-                    StackedItem targetItem = WStackedItem.ofBypass(e.getTarget());
-                    stackedItem.runStackAsync(targetItem, null);
-                }
-            }, 5L);
-        }
-
-    }
-
-    private static class BlockDropItemListener implements Listener {
-
-        private final WildStackerPlugin plugin;
-
-        private BlockDropItemListener(WildStackerPlugin plugin) {
-            this.plugin = plugin;
-        }
-
-        @EventHandler
-        public void onBlockDropItem(BlockDropItemEvent e) {
-            if (!plugin.getSettings().itemsStackingEnabled)
-                return;
-
-            Map<ItemStack, Item> itemsMap = new HashMap<>();
-            List<Item> itemsToRemove = new ArrayList<>();
-
-            for (Item item : e.getItems()) {
-                ItemStack clone = item.getItemStack().clone();
-                clone.setAmount(1);
-
-                StackedItem stackedItem = WStackedItem.ofBypass(item);
-
-                if (stackedItem.isCached()) {
-                    Item currentItem = itemsMap.get(clone);
-
-                    if (currentItem == null) {
-                        itemsMap.put(clone, item);
-                    } else {
-                        itemsToRemove.add(item);
-                        currentItem.getItemStack().setAmount(currentItem.getItemStack().getAmount() + item.getItemStack().getAmount());
-                    }
-
-                    plugin.getSystemManager().removeStackObject(stackedItem);
-                }
-            }
-
-            e.getItems().removeAll(itemsToRemove);
-        }
-
     }
 
 }

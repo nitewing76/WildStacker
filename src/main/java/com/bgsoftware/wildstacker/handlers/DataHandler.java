@@ -1,21 +1,20 @@
 package com.bgsoftware.wildstacker.handlers;
 
-import com.bgsoftware.common.databasebridge.sql.query.Column;
-import com.bgsoftware.common.databasebridge.sql.query.QueryResult;
-import com.bgsoftware.common.databasebridge.sql.transaction.DeleteSQLDatabaseTransaction;
-import com.bgsoftware.common.databasebridge.sql.transaction.InsertSQLDatabaseTransaction;
-import com.bgsoftware.common.databasebridge.sql.transaction.SQLDatabaseTransaction;
-import com.bgsoftware.common.databasebridge.transaction.IDatabaseTransaction;
 import com.bgsoftware.wildstacker.WildStackerPlugin;
-import com.bgsoftware.wildstacker.api.enums.SpawnCause;
+import com.bgsoftware.wildstacker.api.handlers.DataManager;
 import com.bgsoftware.wildstacker.api.objects.StackedBarrel;
 import com.bgsoftware.wildstacker.api.objects.StackedObject;
 import com.bgsoftware.wildstacker.api.objects.StackedSpawner;
 import com.bgsoftware.wildstacker.data.StackedBarrelStore;
-import com.bgsoftware.wildstacker.data.StackedEntityStore;
 import com.bgsoftware.wildstacker.data.StackedItemStore;
 import com.bgsoftware.wildstacker.data.StackedSpawnerStore;
 import com.bgsoftware.wildstacker.database.DBSession;
+import com.bgsoftware.wildstacker.database.sql.Column;
+import com.bgsoftware.wildstacker.database.sql.DeleteSQLDatabaseTransaction;
+import com.bgsoftware.wildstacker.database.sql.IDatabaseTransaction;
+import com.bgsoftware.wildstacker.database.sql.InsertSQLDatabaseTransaction;
+import com.bgsoftware.wildstacker.database.sql.QueryResult;
+import com.bgsoftware.wildstacker.database.sql.SQLDatabaseTransaction;
 import com.bgsoftware.wildstacker.objects.WStackedBarrel;
 import com.bgsoftware.wildstacker.objects.WStackedSpawner;
 import com.bgsoftware.wildstacker.objects.WUnloadedStackedBarrel;
@@ -31,6 +30,7 @@ import org.bukkit.inventory.ItemStack;
 import javax.annotation.Nullable;
 import java.sql.ResultSet;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
@@ -39,10 +39,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 @SuppressWarnings({"WeakerAccess", "all"})
-public final class DataHandler {
+public final class DataHandler implements DataManager {
 
     public final StackedItemStore stackedItemStore = new StackedItemStore();
-    public final StackedEntityStore stackedEntityStore = new StackedEntityStore();
     public final StackedSpawnerStore stackedSpawnerStore = new StackedSpawnerStore();
     public final StackedBarrelStore stackedBarrelStore = new StackedBarrelStore();
 
@@ -65,7 +64,6 @@ public final class DataHandler {
             } catch (Exception ex) {
                 ex.printStackTrace();
                 Bukkit.getScheduler().runTask(plugin, () -> Bukkit.getPluginManager().disablePlugin(plugin));
-                return;
             }
         }, 1L);
     }
@@ -74,19 +72,23 @@ public final class DataHandler {
         DBSession.close();
     }
 
+    @Override
     public void addStackedSpawner(StackedSpawner stackedSpawner) {
         this.stackedSpawnerStore.store(stackedSpawner.getLocation(), stackedSpawner);
     }
 
+    @Override
     public void removeStackedSpawner(StackedSpawner stackedSpawner) {
         this.stackedSpawnerStore.remove(stackedSpawner.getLocation());
         Executor.sync(() -> ((WStackedSpawner) stackedSpawner).removeHologram());
     }
 
+    @Override
     public void addStackedBarrel(StackedBarrel stackedBarrel) {
         this.stackedBarrelStore.store(stackedBarrel.getLocation(), stackedBarrel);
     }
 
+    @Override
     public void removeStackedBarrel(StackedBarrel stackedBarrel) {
         this.stackedBarrelStore.remove(stackedBarrel.getLocation());
         stackedBarrel.removeDisplayBlock();
@@ -96,7 +98,6 @@ public final class DataHandler {
     public List<StackedObject> getStackedObjects() {
         List<StackedObject> stackedObjects = new LinkedList<>();
         this.stackedItemStore.collect(stackedObjects);
-        this.stackedEntityStore.collect(stackedObjects);
         this.stackedSpawnerStore.collect(stackedObjects);
         this.stackedBarrelStore.collect(stackedObjects);
         return stackedObjects.isEmpty() ? Collections.emptyList() : stackedObjects;
@@ -112,14 +113,14 @@ public final class DataHandler {
         transaction
                 .bindObject(serializeLocationInternal(stackedSpawner.getLocation()))
                 .bindObject(stackedSpawner.getStackAmount())
-                .bindObject(stackedSpawner.getUpgradeId())
+                .bindObject(0)
                 .newBatch();
 
         return transaction;
     }
 
     public void insertSpawner(WStackedSpawner stackedSpawner) {
-        insertSpawner(stackedSpawner, null);
+        DBSession.execute(insertSpawner(stackedSpawner, null));
     }
 
     public void deleteSpawner(@Nullable Location location) {
@@ -150,7 +151,7 @@ public final class DataHandler {
     }
 
     public void insertBarrel(StackedBarrel stackedBarrel) {
-        insertBarrel(stackedBarrel, null);
+        DBSession.execute(insertBarrel(stackedBarrel, null));
     }
 
     public void deleteBarrel(@Nullable Location location) {
@@ -167,7 +168,6 @@ public final class DataHandler {
     private void loadDatabase() {
         prepareDatabase();
 
-        loadEntities();
         loadItems();
 
         List<IDatabaseTransaction> transactionsToExecute = new LinkedList<>();
@@ -194,34 +194,16 @@ public final class DataHandler {
                 new Column("stackAmount", "INTEGER"),
                 new Column("upgrade", "INTEGER"));
 
-        // Adding upgrade column if it doesn't exist
         addColumnIfNotExists("upgrade", "spawners", "0", "INTEGER");
 
-        //Creating default barrels table
         DBSession.createTable("barrels",
                 new Column("location", "LONG_UNIQUE_TEXT PRIMARY KEY"),
                 new Column("stackAmount", "INTEGER"),
                 new Column("item", "TEXT"));
-    }
 
-    private void loadEntities() {
-        if (!plugin.getSettings().storeEntities)
-            return;
-
-        long startTime = System.currentTimeMillis();
-
-        WildStackerPlugin.log("Starting to load entities...");
-
-        DBSession.select("entities", "", new QueryResult<ResultSet>().onSuccess(resultSet -> {
-            while (resultSet.next()) {
-                int stackAmount = resultSet.getInt("stackAmount");
-                SpawnCause spawnCause = SpawnCause.matchCause(resultSet.getString("spawnCause"));
-                UUID uuid = UUID.fromString(resultSet.getString("uuid"));
-                this.stackedEntityStore.storeUnloaded(uuid, new StackedEntityStore.Unloaded(stackAmount, spawnCause));
-            }
-        }));
-
-        WildStackerPlugin.log("Loading entities done! Took " + (System.currentTimeMillis() - startTime) + " ms.");
+        DBSession.createTable("items",
+                new Column("uuid", "LONG_UNIQUE_TEXT PRIMARY KEY"),
+                new Column("stackAmount", "INTEGER"));
     }
 
     private void loadItems() {
@@ -259,9 +241,9 @@ public final class DataHandler {
                 String[] locationSections = location.split(",");
 
                 String worldName = locationSections[0];
-                int locX = Integer.valueOf(locationSections[1]);
-                int locY = Integer.valueOf(locationSections[2]);
-                int locZ = Integer.valueOf(locationSections[3]);
+                int locX = Integer.parseInt(locationSections[1]);
+                int locY = Integer.parseInt(locationSections[2]);
+                int locZ = Integer.parseInt(locationSections[3]);
 
                 String exceptionReason = null;
 
@@ -273,7 +255,7 @@ public final class DataHandler {
                     this.stackedSpawnerStore.storeUnloaded(unloadedStackedSpawner);
                     continue;
                 } catch (Exception ex) {
-                    exceptionReason = "Exception was thrown.";
+                    exceptionReason = ex.getMessage() != null ? ex.getMessage() : "Exception was thrown.";
                 }
 
                 WildStackerPlugin.log("Couldn't load spawner: " + location);
@@ -310,22 +292,22 @@ public final class DataHandler {
                 String[] locationSections = location.split(",");
 
                 String worldName = locationSections[0];
-                int locX = Integer.valueOf(locationSections[1]);
-                int locY = Integer.valueOf(locationSections[2]);
-                int locZ = Integer.valueOf(locationSections[3]);
+                int locX = Integer.parseInt(locationSections[1]);
+                int locY = Integer.parseInt(locationSections[2]);
+                int locZ = Integer.parseInt(locationSections[3]);
 
                 String exceptionReason = null;
 
                 try {
                     int stackAmount = resultSet.getInt("stackAmount");
-                    ItemStack barrelItem = resultSet.getString("item").isEmpty() ? null :
-                            plugin.getNMSAdapter().deserialize(resultSet.getString("item"));
+                    String rawItem = resultSet.getString("item");
+                    ItemStack barrelItem = (rawItem == null || rawItem.isEmpty()) ? null : deserializeItemInternal(rawItem);
                     WUnloadedStackedBarrel unloadedStackedBarrel =
                             new WUnloadedStackedBarrel(worldName, locX, locY, locZ, stackAmount, barrelItem);
                     this.stackedBarrelStore.storeUnloaded(unloadedStackedBarrel);
                     continue;
                 } catch (Exception ex) {
-                    exceptionReason = "Exception was thrown.";
+                    exceptionReason = ex.getMessage() != null ? ex.getMessage() : "Exception was thrown.";
                 }
 
                 WildStackerPlugin.log("Couldn't load barrel: " + location);
@@ -345,8 +327,24 @@ public final class DataHandler {
         WildStackerPlugin.log("Loading barrels done! Took " + (System.currentTimeMillis() - startTime) + " ms.");
     }
 
-    private String serializeItemInternal(@Nullable ItemStack itemStack) {
-        return itemStack == null ? "" : plugin.getNMSAdapter().serialize(itemStack);
+    public static String serializeItemInternal(@Nullable ItemStack itemStack) {
+        if (itemStack == null || itemStack.getType().isAir()) {
+            return "";
+        }
+        return Base64.getEncoder().encodeToString(itemStack.serializeAsBytes());
+    }
+
+    @Nullable
+    public static ItemStack deserializeItemInternal(String data) {
+        if (data == null || data.isEmpty()) {
+            return null;
+        }
+        try {
+            byte[] bytes = Base64.getDecoder().decode(data);
+            return ItemStack.deserializeBytes(bytes);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private static void addColumnIfNotExists(String column, String table, String def, String type) {
@@ -355,7 +353,7 @@ public final class DataHandler {
     }
 
     private static String serializeLocationInternal(@Nullable Location location) {
-        return location == null ? "" : serializeLocationInternal(
+        return location == null || location.getWorld() == null ? "" : serializeLocationInternal(
                 location.getWorld().getName(), location.getBlockX(), location.getBlockY(), location.getBlockZ());
     }
 

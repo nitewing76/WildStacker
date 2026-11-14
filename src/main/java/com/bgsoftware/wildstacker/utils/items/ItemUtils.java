@@ -1,18 +1,19 @@
 package com.bgsoftware.wildstacker.utils.items;
 
-import com.bgsoftware.common.reflection.ReflectMethod;
+import com.bgsoftware.wildstacker.Locale;
 import com.bgsoftware.wildstacker.WildStackerPlugin;
-import com.bgsoftware.wildstacker.api.upgrades.SpawnerUpgrade;
-import com.bgsoftware.wildstacker.utils.ServerVersion;
-import com.bgsoftware.wildstacker.utils.entity.EntityUtils;
-import com.bgsoftware.wildstacker.utils.legacy.EntityTypes;
-import com.bgsoftware.wildstacker.utils.legacy.Materials;
 import com.bgsoftware.wildstacker.utils.threads.Executor;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Tag;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockState;
+import org.bukkit.block.CreatureSpawner;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
@@ -27,42 +28,33 @@ import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
-import org.bukkit.inventory.meta.SpawnEggMeta;
+import org.bukkit.inventory.meta.BlockStateMeta;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 
 import javax.annotation.Nullable;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.OptionalInt;
-import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 public final class ItemUtils {
 
-    private static final ReflectMethod<EquipmentSlot> PLAYER_INTERACT_EVENT_GET_HAND = new ReflectMethod<>(
-            PlayerInteractEvent.class, "getHand");
-    private static final ReflectMethod<EquipmentSlot> BLOCK_PLACE_EVENT_GET_HAND = new ReflectMethod<>(
-            BlockPlaceEvent.class, "getHand");
-    private static final ReflectMethod<EquipmentSlot> PLAYER_INTERACT_ENTITY_EVENT_GET_HAND = new ReflectMethod<>(
-            PlayerInteractEntityEvent.class, "getHand");
-    private static final ReflectMethod<EquipmentSlot> PLAYER_BUCKET_EVENT_GET_HAND = new ReflectMethod<>(
-            PlayerBucketEvent.class, "getHand");
-    private static final ReflectMethod<ItemStack> PLAYER_INVENTORY_GET_ITEM_IN_OFFHAND = new ReflectMethod<>(
-            PlayerInventory.class, "getItemInOffHand");
-    private static final ReflectMethod<ItemStack> PLAYER_INVENTORY_SET_ITEM_IN_OFFHAND = new ReflectMethod<>(
-            PlayerInventory.class, "setItemInOffHand", ItemStack.class);
-
     private static final Pattern LEGACY_PATTERN = Pattern.compile("LEGACY_");
-
-    private static final EquipmentSlot OFF_HAND_EQUIPMENT_SLOT = ((Supplier<EquipmentSlot>) () -> {
-        try {
-            return EquipmentSlot.valueOf("OFF_HAND");
-        } catch (IllegalArgumentException error) {
-            return null;
-        }
-    }).get();
+    private static final LegacyComponentSerializer SECTION_SERIALIZER = LegacyComponentSerializer.legacySection();
 
     private static final WildStackerPlugin plugin = WildStackerPlugin.getPlugin();
     private static final int MAX_PICKUP_DELAY = 32767;
+
+    private static final NamespacedKey KEY_SPAWNERS_AMOUNT = new NamespacedKey("wildstacker", "spawners-amount");
+    private static final NamespacedKey KEY_ENTITY_TYPE = new NamespacedKey("wildstacker", "entity-type");
+    private static final NamespacedKey KEY_ITEM_STACK_AMOUNT = new NamespacedKey("wildstacker", "item-stack-amount");
+
+    private ItemUtils() {
+    }
 
     public static void addItems(ItemStack[] itemStacks, Inventory inventory, Location location) {
         Arrays.stream(itemStacks)
@@ -73,9 +65,9 @@ public final class ItemUtils {
     public static void addItem(ItemStack itemStack, Inventory inventory, Location location) {
         HashMap<Integer, ItemStack> additionalItems = inventory.addItem(itemStack);
 
-        if (Materials.isBucket(itemStack.getType()))
+        if (isBucket(itemStack.getType()))
             stackBucket(itemStack, inventory);
-        if (Materials.isSoup(itemStack))
+        if (isSoup(itemStack))
             stackStew(itemStack, inventory);
 
         if (location != null && !additionalItems.isEmpty()) {
@@ -90,7 +82,7 @@ public final class ItemUtils {
             return;
         }
 
-        if (itemStack.getType() == Material.AIR || itemStack.getAmount() <= 0)
+        if (itemStack == null || itemStack.getType() == Material.AIR || itemStack.getAmount() <= 0 || location == null || location.getWorld() == null)
             return;
 
         int amount = itemStack.getAmount();
@@ -110,7 +102,7 @@ public final class ItemUtils {
                 if (amount % 64 > 0) {
                     ItemStack cloned = itemStack.clone();
                     cloned.setAmount(amount % 64);
-                    plugin.getSystemManager().spawnItemWithAmount(location, cloned);
+                    plugin.getSystemManager().spawnItemWithAmount(location, cloned, amount % 64);
                 }
             }
         } catch (Exception ex) {
@@ -120,11 +112,21 @@ public final class ItemUtils {
     }
 
     public static ItemStack setSpawnerItemAmount(ItemStack itemStack, int amount) {
-        return plugin.getNMSAdapter().setTag(itemStack, "spawners-amount", amount);
-    }
+        if (itemStack == null || itemStack.getType() == Material.AIR)
+            return itemStack;
 
-    public static ItemStack setSpawnerUpgrade(ItemStack itemStack, int upgradeId) {
-        return plugin.getNMSAdapter().setTag(itemStack, "spawners-upgrade", upgradeId);
+        ItemStack cloned = itemStack.clone();
+        ItemMeta meta = cloned.getItemMeta();
+        if (meta != null) {
+            PersistentDataContainer pdc = meta.getPersistentDataContainer();
+            if (amount <= 1) {
+                pdc.remove(KEY_SPAWNERS_AMOUNT);
+            } else {
+                pdc.set(KEY_SPAWNERS_AMOUNT, PersistentDataType.INTEGER, amount);
+            }
+            cloned.setItemMeta(meta);
+        }
+        return cloned;
     }
 
     public static int getSpawnerItemAmount(ItemStack itemStack) {
@@ -132,68 +134,208 @@ public final class ItemUtils {
     }
 
     public static OptionalInt getSpawnerItemAmountOptional(ItemStack itemStack) {
-        Integer spawnersAmount = plugin.getNMSAdapter().getTag(itemStack, "spawners-amount", Integer.class, null);
+        if (itemStack == null || !itemStack.hasItemMeta())
+            return OptionalInt.empty();
+
+        ItemMeta meta = itemStack.getItemMeta();
+        if (meta == null)
+            return OptionalInt.empty();
+
+        Integer spawnersAmount = meta.getPersistentDataContainer().get(KEY_SPAWNERS_AMOUNT, PersistentDataType.INTEGER);
         if (spawnersAmount == null)
             return OptionalInt.empty();
+
         return OptionalInt.of(Math.max(1, spawnersAmount));
     }
 
-    public static int getSpawnerUpgrade(ItemStack itemStack) {
-        int spawnerUpgrade = plugin.getNMSAdapter().getTag(itemStack, "spawners-upgrade", Integer.class, -1);
-        return Math.max(-1, spawnerUpgrade);
-    }
-
-    public static ItemStack getSpawnerItem(EntityType entityType, int amount, SpawnerUpgrade spawnerUpgrade) {
-        return plugin.getProviders().getSpawnersProvider().getSpawnerItem(entityType, amount, spawnerUpgrade);
-    }
-
-    @SuppressWarnings("deprecation")
-    public static EntityTypes getEntityType(ItemStack itemStack) {
-        if (!Materials.isValidAndSpawnEgg(itemStack))
-            throw new IllegalArgumentException("Only spawn-eggs can be used in ItemUtil#getEntityType");
-
-        try {
-            if (ServerVersion.isLegacy()) {
-                try {
-                    SpawnEggMeta spawnEggMeta = (SpawnEggMeta) itemStack.getItemMeta();
-                    return spawnEggMeta.getSpawnedType() == null ? EntityTypes.PIG : EntityTypes.fromName(spawnEggMeta.getSpawnedType().name());
-                } catch (NoClassDefFoundError error) {
-                    return EntityTypes.fromName(EntityType.fromId(itemStack.getDurability()).name());
-                }
-            } else {
-                return Materials.getSpawnEgg(itemStack.getType());
-            }
-        } catch (NullPointerException ex) {
-            return null;
+    public static void saveItemStackAmount(Item item, int stackAmount) {
+        if (item == null)
+            return;
+        PersistentDataContainer pdc = item.getPersistentDataContainer();
+        if (stackAmount <= 1) {
+            pdc.remove(KEY_ITEM_STACK_AMOUNT);
+        } else {
+            pdc.set(KEY_ITEM_STACK_AMOUNT, PersistentDataType.INTEGER, stackAmount);
         }
     }
 
-    @SuppressWarnings("deprecation")
-    public static void setEntityType(ItemStack itemStack, EntityType entityType) {
-        if (!Materials.isValidAndSpawnEgg(itemStack))
-            throw new IllegalArgumentException("Only spawn-eggs can be used in ItemUtil#getEntityType");
+    public static int loadItemStackAmount(Item item) {
+        if (item == null)
+            return 1;
+        Integer stored = item.getPersistentDataContainer().get(KEY_ITEM_STACK_AMOUNT, PersistentDataType.INTEGER);
+        return stored == null ? item.getItemStack().getAmount() : Math.max(1, stored);
+    }
 
-        if (ServerVersion.isLegacy()) {
-            try {
-                SpawnEggMeta spawnEggMeta = (SpawnEggMeta) itemStack.getItemMeta();
-                spawnEggMeta.setSpawnedType(entityType);
-                itemStack.setItemMeta(spawnEggMeta);
-            } catch (NoClassDefFoundError error) {
-                itemStack.setDurability(entityType.getTypeId());
+    public static ItemStack getSpawnerItem(EntityType entityType, int amount) {
+        ItemStack itemStack = new ItemStack(Material.SPAWNER, 1);
+        ItemMeta meta = itemStack.getItemMeta();
+        if (meta instanceof BlockStateMeta blockStateMeta) {
+            BlockState blockState = blockStateMeta.getBlockState();
+            if (blockState instanceof CreatureSpawner spawner) {
+                spawner.setSpawnedType(entityType);
+                blockStateMeta.setBlockState(spawner);
             }
-        } else {
-            itemStack.setType(Materials.getSpawnEgg(entityType));
+        }
+        if (meta != null) {
+            if (entityType != null) {
+                meta.getPersistentDataContainer().set(KEY_ENTITY_TYPE, PersistentDataType.STRING, entityType.name());
+            }
+            if (amount > 1) {
+                meta.getPersistentDataContainer().set(KEY_SPAWNERS_AMOUNT, PersistentDataType.INTEGER, amount);
+            }
+
+            String entityName = getFormattedEntityType(entityType);
+            String rawName = plugin.getSettings().spawnerItemName;
+            if (rawName != null && !rawName.isEmpty()) {
+                String formattedName = rawName
+                        .replace("{0}", String.valueOf(amount))
+                        .replace("{1}", entityName)
+                        .replace("{2}", "");
+                meta.displayName(SECTION_SERIALIZER.deserialize(formattedName));
+            }
+
+            List<String> rawLore = plugin.getSettings().spawnerItemLore;
+            if (rawLore != null && !rawLore.isEmpty()) {
+                List<Component> loreComponents = new ArrayList<>(rawLore.size());
+                for (String line : rawLore) {
+                    String formattedLine = line
+                            .replace("{0}", String.valueOf(amount))
+                            .replace("{1}", entityName)
+                            .replace("{2}", "");
+                    loreComponents.add(SECTION_SERIALIZER.deserialize(formattedLine));
+                }
+                meta.lore(loreComponents);
+            }
+
+            itemStack.setItemMeta(meta);
+        }
+        return itemStack;
+    }
+
+    @Nullable
+    public static EntityType getSpawnerItemEntityType(ItemStack itemStack) {
+        if (itemStack == null || itemStack.getType() != Material.SPAWNER)
+            return null;
+
+        ItemMeta meta = itemStack.getItemMeta();
+        if (meta != null) {
+            String storedType = meta.getPersistentDataContainer().get(KEY_ENTITY_TYPE, PersistentDataType.STRING);
+            if (storedType != null && !storedType.isEmpty()) {
+                try {
+                    return EntityType.valueOf(storedType);
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+            if (meta instanceof BlockStateMeta blockStateMeta && blockStateMeta.hasBlockState()) {
+                BlockState state = blockStateMeta.getBlockState();
+                if (state instanceof CreatureSpawner spawner && spawner.getSpawnedType() != null) {
+                    return spawner.getSpawnedType();
+                }
+            }
+        }
+        return EntityType.PIG;
+    }
+
+    @Nullable
+    public static EntityType getEntityType(ItemStack itemStack) {
+        if (!isValidAndSpawnEgg(itemStack))
+            throw new IllegalArgumentException("Only spawn-eggs can be used in ItemUtils#getEntityType");
+
+        EntityType nmsType = getNMSEntityType(itemStack);
+        if (nmsType != null)
+            return nmsType;
+
+        Material eggMaterial = Bukkit.getItemFactory().getSpawnEgg(EntityType.PIG);
+        String matName = itemStack.getType().name();
+        if (matName.endsWith("_SPAWN_EGG")) {
+            String rawEntity = matName.substring(0, matName.length() - "_SPAWN_EGG".length());
+            try {
+                return EntityType.valueOf(rawEntity);
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        return null;
+    }
+
+    public static void setEntityType(ItemStack itemStack, EntityType entityType) {
+        if (!isValidAndSpawnEgg(itemStack))
+            throw new IllegalArgumentException("Only spawn-eggs can be used in ItemUtils#setEntityType");
+
+        Material spawnEgg = getSpawnEgg(entityType);
+        if (spawnEgg != null) {
+            itemStack.setType(spawnEgg);
         }
     }
 
     public static ItemStack getItemNMSEntityType(EntityType entityType) {
-        ItemStack itemStack = new ItemStack(Materials.getSpawnEgg(EntityType.GHAST));
-        return plugin.getNMSAdapter().setTag(itemStack, "entity-type", entityType.name());
+        Material eggMat = getSpawnEgg(entityType);
+        if (eggMat == null)
+            eggMat = Material.GHAST_SPAWN_EGG;
+
+        ItemStack itemStack = new ItemStack(eggMat);
+        ItemMeta meta = itemStack.getItemMeta();
+        if (meta != null && entityType != null) {
+            meta.getPersistentDataContainer().set(KEY_ENTITY_TYPE, PersistentDataType.STRING, entityType.name());
+            itemStack.setItemMeta(meta);
+        }
+        return itemStack;
     }
 
+    @Nullable
     public static EntityType getNMSEntityType(ItemStack itemStack) {
-        String entityType = plugin.getNMSAdapter().getTag(itemStack, "entity-type", String.class, "");
-        return entityType.isEmpty() ? null : EntityType.valueOf(entityType);
+        if (itemStack == null || !itemStack.hasItemMeta())
+            return null;
+        ItemMeta meta = itemStack.getItemMeta();
+        if (meta == null)
+            return null;
+        String entityType = meta.getPersistentDataContainer().get(KEY_ENTITY_TYPE, PersistentDataType.STRING);
+        if (entityType == null || entityType.isEmpty())
+            return null;
+        try {
+            return EntityType.valueOf(entityType);
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    @Nullable
+    public static Material getSpawnEgg(EntityType entityType) {
+        if (entityType == null)
+            return null;
+        Material egg = Bukkit.getItemFactory().getSpawnEgg(entityType);
+        if (egg != null)
+            return egg;
+        try {
+            return Material.valueOf(entityType.name() + "_SPAWN_EGG");
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    public static boolean isValidAndSpawnEgg(@Nullable ItemStack itemStack) {
+        return itemStack != null && itemStack.getType().name().endsWith("_SPAWN_EGG");
+    }
+
+    public static boolean isPickaxe(@Nullable ItemStack itemStack) {
+        return itemStack != null && (Tag.ITEMS_PICKAXES.isTagged(itemStack.getType()) || itemStack.getType().name().endsWith("_PICKAXE"));
+    }
+
+    public static boolean isShulkerBox(@Nullable ItemStack itemStack) {
+        return itemStack != null && Tag.SHULKER_BOXES.isTagged(itemStack.getType());
+    }
+
+    public static boolean isBucket(@Nullable Material material) {
+        if (material == null || material == Material.BUCKET)
+            return false;
+        return material.name().endsWith("_BUCKET");
+    }
+
+    public static boolean isSoup(@Nullable ItemStack itemStack) {
+        if (itemStack == null)
+            return false;
+        Material type = itemStack.getType();
+        return type == Material.MUSHROOM_STEW || type == Material.RABBIT_STEW ||
+                type == Material.BEETROOT_SOUP || type == Material.SUSPICIOUS_STEW;
     }
 
     public static String getFormattedType(ItemStack itemStack) {
@@ -203,20 +345,46 @@ public final class ItemUtils {
         if (customName != null)
             return customName;
 
-        customName = plugin.getSettings().customNames.get(typeName + ":" + itemStack.getDurability());
+        return formatEnumType(typeName);
+    }
+
+    public static String getFormattedEntityType(EntityType entityType) {
+        if (entityType == null)
+            return "";
+        String customName = plugin.getSettings().customNames.get(entityType.name());
         if (customName != null)
             return customName;
+        return formatEnumType(entityType.name());
+    }
 
-        return EntityUtils.getFormattedType(typeName);
+    public static String formatEnumType(String rawName) {
+        if (rawName == null || rawName.isEmpty())
+            return "";
+        StringBuilder name = new StringBuilder();
+        for (String section : rawName.split("_")) {
+            if (section.isEmpty())
+                continue;
+            if (!name.isEmpty())
+                name.append(" ");
+            name.append(Character.toUpperCase(section.charAt(0)))
+                    .append(section.substring(1).toLowerCase(java.util.Locale.ENGLISH));
+        }
+        return name.toString();
     }
 
     public static void stackBucket(ItemStack bucket, Inventory inventory) {
-        if (plugin.getSettings().bucketsStackerEnabled)
-            stackItems(bucket, inventory, plugin.getSettings().bucketsMaxStack);
+        if (!plugin.getSettings().bucketsStackerEnabled || bucket == null)
+            return;
+        if (bucket.hasItemMeta() && bucket.getItemMeta().hasDisplayName()) {
+            String legacyName = SECTION_SERIALIZER.serialize(bucket.getItemMeta().displayName());
+            if (plugin.getSettings().bucketsBlacklistedNames.contains(legacyName))
+                return;
+        }
+        stackItems(bucket, inventory, plugin.getSettings().bucketsMaxStack);
     }
 
     public static void stackStew(ItemStack stew, Inventory inventory) {
-        if (plugin.getSettings().stewsStackingEnabled)
+        if (plugin.getSettings().stewsStackingEnabled && stew != null)
             stackItems(stew, inventory, plugin.getSettings().stewsMaxStack);
     }
 
@@ -241,10 +409,10 @@ public final class ItemUtils {
 
         for (int i = 0; i < amountOfItems / maxStack; i++) {
             if (slotToSetFirstItem != -1) {
-                inventory.setItem(slotToSetFirstItem, cloned);
+                inventory.setItem(slotToSetFirstItem, cloned.clone());
                 slotToSetFirstItem = -1;
             } else {
-                inventory.addItem(cloned);
+                inventory.addItem(cloned.clone());
             }
         }
 
@@ -261,10 +429,7 @@ public final class ItemUtils {
     }
 
     public static ItemStack getFromBlock(Block block) {
-        ItemStack itemStack = ServerVersion.isLegacy() ? block.getState().getData().toItemStack(1) : new ItemStack(block.getType());
-        if (plugin.getNMSWorld().isRotatable(block))
-            itemStack.setDurability((short) 0);
-        return itemStack;
+        return block == null ? new ItemStack(Material.AIR) : new ItemStack(block.getType());
     }
 
     private static void updateInventory(Inventory inventory) {
@@ -273,44 +438,40 @@ public final class ItemUtils {
     }
 
     public static EquipmentSlot getHand(Event event) {
-        ReflectMethod<EquipmentSlot> getHandMethod;
-
-        if (event instanceof PlayerInteractEvent) {
-            getHandMethod = PLAYER_INTERACT_EVENT_GET_HAND;
-        } else if (event instanceof PlayerInteractEntityEvent) {
-            getHandMethod = PLAYER_INTERACT_ENTITY_EVENT_GET_HAND;
-        } else if (event instanceof BlockPlaceEvent) {
-            getHandMethod = BLOCK_PLACE_EVENT_GET_HAND;
-        } else if (event instanceof PlayerBucketEvent) {
-            getHandMethod = PLAYER_BUCKET_EVENT_GET_HAND;
+        if (event instanceof PlayerInteractEvent interactEvent) {
+            return interactEvent.getHand() == null ? EquipmentSlot.HAND : interactEvent.getHand();
+        } else if (event instanceof PlayerInteractEntityEvent interactEntityEvent) {
+            return interactEntityEvent.getHand();
+        } else if (event instanceof BlockPlaceEvent blockPlaceEvent) {
+            return blockPlaceEvent.getHand();
+        } else if (event instanceof PlayerBucketEvent bucketEvent) {
+            return bucketEvent.getHand();
         } else {
             throw new IllegalArgumentException("Cannot get used hand for event: " + event.getClass());
         }
-
-        return !getHandMethod.isValid() ? EquipmentSlot.HAND : getHandMethod.invoke(event);
     }
 
     public static void removeItemFromHand(Player player, int amount, EquipmentSlot equipmentSlot) {
         PlayerInventory playerInventory = player.getInventory();
 
         if (equipmentSlot == EquipmentSlot.HAND) {
-            ItemStack mainHand = playerInventory.getItemInHand();
-            if (mainHand != null) {
+            ItemStack mainHand = playerInventory.getItemInMainHand();
+            if (mainHand.getType() != Material.AIR) {
                 mainHand.setAmount(mainHand.getAmount() - amount);
-                playerInventory.setItemInHand(mainHand);
+                playerInventory.setItemInMainHand(mainHand);
             }
-        } else if (OFF_HAND_EQUIPMENT_SLOT == equipmentSlot) {
-            ItemStack offHand = PLAYER_INVENTORY_GET_ITEM_IN_OFFHAND.invoke(playerInventory);
-            if (offHand != null) {
+        } else if (equipmentSlot == EquipmentSlot.OFF_HAND) {
+            ItemStack offHand = playerInventory.getItemInOffHand();
+            if (offHand.getType() != Material.AIR) {
                 offHand.setAmount(offHand.getAmount() - amount);
-                PLAYER_INVENTORY_SET_ITEM_IN_OFFHAND.invoke(playerInventory, offHand);
+                playerInventory.setItemInOffHand(offHand);
             }
         }
     }
 
     @Nullable
     public static ItemStack getItemInOffhand(PlayerInventory inventory) {
-        return OFF_HAND_EQUIPMENT_SLOT == null ? null : getItemFromHand(inventory, OFF_HAND_EQUIPMENT_SLOT);
+        return getItemFromHand(inventory, EquipmentSlot.OFF_HAND);
     }
 
     public static int countItem(Inventory inventory, ItemStack itemStack) {
@@ -324,7 +485,7 @@ public final class ItemUtils {
         return counter;
     }
 
-    public static void removeItemFromHand(Inventory inventory, ItemStack itemStack, int amount) {
+    public static void removeItem(Inventory inventory, ItemStack itemStack, int amount) {
         int amountRemoved = 0;
 
         for (int i = 0; i < inventory.getSize() && amountRemoved < amount; i++) {
@@ -344,60 +505,55 @@ public final class ItemUtils {
     @Nullable
     public static ItemStack getItemFromHand(PlayerInventory inventory, EquipmentSlot equipmentSlot) {
         if (equipmentSlot == EquipmentSlot.HAND) {
-            return inventory.getItemInHand();
-        } else if (equipmentSlot == OFF_HAND_EQUIPMENT_SLOT && PLAYER_INVENTORY_GET_ITEM_IN_OFFHAND.isValid()) {
-            return PLAYER_INVENTORY_GET_ITEM_IN_OFFHAND.invoke(inventory);
+            return inventory.getItemInMainHand();
+        } else if (equipmentSlot == EquipmentSlot.OFF_HAND) {
+            return inventory.getItemInOffHand();
         }
-
         return null;
     }
 
     public static void setItemInHand(PlayerInventory inventory, EquipmentSlot equipmentSlot, ItemStack itemStack) {
         if (equipmentSlot == EquipmentSlot.HAND) {
-            inventory.setItemInHand(itemStack);
-        } else if (equipmentSlot == OFF_HAND_EQUIPMENT_SLOT && PLAYER_INVENTORY_SET_ITEM_IN_OFFHAND.isValid()) {
-            PLAYER_INVENTORY_SET_ITEM_IN_OFFHAND.invoke(inventory, itemStack);
+            inventory.setItemInMainHand(itemStack);
+        } else if (equipmentSlot == EquipmentSlot.OFF_HAND) {
+            inventory.setItemInOffHand(itemStack);
         }
     }
 
     public static boolean canPickup(Item item) {
-        return item.getPickupDelay() < MAX_PICKUP_DELAY && !item.hasMetadata("ChestShop_Display") && !item.hasMetadata("no_pickup");
+        return item != null && item.getPickupDelay() < MAX_PICKUP_DELAY &&
+                !item.hasMetadata("ChestShop_Display") && !item.hasMetadata("no_pickup");
     }
 
     public static boolean isOffHand(Event event) {
-        return OFF_HAND_EQUIPMENT_SLOT == getHand(event);
+        return EquipmentSlot.OFF_HAND == getHand(event);
     }
 
     public static boolean isPickaxeAndHasSilkTouch(@Nullable ItemStack itemStack) {
-        if (!Materials.isPickaxe(itemStack))
+        if (!isPickaxe(itemStack) || itemStack == null)
             return false;
 
-        assert itemStack != null;
-
         int requiredLevel = plugin.getSettings().silkTouchMinimumLevel;
-
-        return plugin.getProviders().hasEnchantmentLevel(itemStack, Enchantment.SILK_TOUCH, requiredLevel) ||
-                itemStack.getEnchantmentLevel(Enchantment.SILK_TOUCH) >= requiredLevel;
+        return itemStack.getEnchantmentLevel(Enchantment.SILK_TOUCH) >= requiredLevel;
     }
 
     public static Location getSafeDropLocation(Location origin) {
         Location location;
 
-        if ((location = origin.clone().add(0, 0.5, 0)).getBlock().getType() == Material.AIR)
+        if ((location = origin.clone().add(0, 0.5, 0)).getBlock().getType().isAir())
             return location;
-        else if ((location = origin.clone().subtract(0, 0.5, 0)).getBlock().getType() == Material.AIR)
+        else if ((location = origin.clone().subtract(0, 0.5, 0)).getBlock().getType().isAir())
             return location;
 
         return origin;
     }
 
     public static boolean isStackable(Entity entity) {
-        return entity.isValid() && !entity.isDead() && entity instanceof Item &&
-                plugin.getNMSEntities().isDroppedItem((Item) entity);
+        return entity != null && entity.isValid() && !entity.isDead() && entity instanceof Item;
     }
 
     public static boolean canBeStacked(ItemStack itemStack, World world) {
-        if (!plugin.getSettings().itemsStackingEnabled)
+        if (!plugin.getSettings().itemsStackingEnabled || itemStack == null || world == null)
             return false;
 
         Material itemType = itemStack.getType();

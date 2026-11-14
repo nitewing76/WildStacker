@@ -30,7 +30,7 @@ public final class ItemsMerger extends BukkitRunnable {
 
     @Override
     public void run() {
-        if (Bukkit.getOnlinePlayers().size() > 0) {
+        if (!Bukkit.getOnlinePlayers().isEmpty()) {
             for (World world : Bukkit.getWorlds()) {
                 try {
                     for (Item item : world.getEntitiesByClass(Item.class)) {
@@ -43,7 +43,7 @@ public final class ItemsMerger extends BukkitRunnable {
                             if (!stackedItem.isCached())
                                 continue;
 
-                            stackedItem.runStackAsync(null);
+                            ((WStackedItem) stackedItem).runStackAsync(null);
                         } catch (Throwable ignored) {
                         }
                     }
@@ -52,4 +52,5 @@ public final class ItemsMerger extends BukkitRunnable {
             }
         }
     }
+
 }

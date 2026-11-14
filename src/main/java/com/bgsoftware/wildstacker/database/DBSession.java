@@ -1,131 +1,238 @@
 package com.bgsoftware.wildstacker.database;
 
-import com.bgsoftware.common.databasebridge.DatabaseSessionFactory;
-import com.bgsoftware.common.databasebridge.logger.ILogger;
-import com.bgsoftware.common.databasebridge.session.IDatabaseSession;
-import com.bgsoftware.common.databasebridge.sql.query.Column;
-import com.bgsoftware.common.databasebridge.sql.query.QueryResult;
-import com.bgsoftware.common.databasebridge.sql.session.MariaDBDatabaseSession;
-import com.bgsoftware.common.databasebridge.sql.session.MySQLDatabaseSession;
-import com.bgsoftware.common.databasebridge.sql.session.SQLDatabaseSession;
-import com.bgsoftware.common.databasebridge.sql.session.SQLiteDatabaseSession;
-import com.bgsoftware.common.databasebridge.transaction.DatabaseTransactionsExecutor;
-import com.bgsoftware.common.databasebridge.transaction.IDatabaseTransaction;
 import com.bgsoftware.wildstacker.WildStackerPlugin;
+import com.bgsoftware.wildstacker.database.sql.Column;
+import com.bgsoftware.wildstacker.database.sql.IDatabaseTransaction;
+import com.bgsoftware.wildstacker.database.sql.QueryResult;
+import com.bgsoftware.wildstacker.handlers.SettingsHandler;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import java.io.File;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Collection;
-import java.util.concurrent.CompletableFuture;
+import java.util.Collections;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-public class DBSession {
+public final class DBSession {
 
-    private static final ILogger LOGGER = new ILogger() {
-        @Override
-        public void error(String message, Throwable error) {
-            WildStackerPlugin.log(message);
-            error.printStackTrace();
-        }
+    private static HikariDataSource dataSource;
+    private static Connection sqliteConnection;
+    private static boolean isMySQL = false;
+    private static String tablePrefix = "";
+    private static ExecutorService dbExecutor;
 
-        @Override
-        public boolean hasDebugEnabled() {
-            return false;
-        }
-
-        @Override
-        public void debug(String message) {
-            // Do nothing
-        }
-
-        @Override
-        public void info(String message) {
-            WildStackerPlugin.log(message);
-        }
-    };
-
-    private static SQLDatabaseSession<?> globalSession = null;
-
-    public static boolean isReady() {
-        return globalSession != null;
+    private DBSession() {
     }
 
     public static boolean createConnection(WildStackerPlugin plugin) {
-        SQLDatabaseSession<?> session = createSessionInternal(plugin, true);
+        close();
 
-        if (session.connect()) {
-            globalSession = session;
-            return true;
+        dbExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "WildStacker-Database-Thread");
+            thread.setDaemon(true);
+            return thread;
+        });
+
+        SettingsHandler settings = plugin.getSettings();
+        String dbType = settings.databaseType == null ? "SQLITE" : settings.databaseType.toUpperCase(Locale.ENGLISH);
+        tablePrefix = settings.databaseMySQLPrefix == null ? "" : settings.databaseMySQLPrefix;
+
+        try {
+            if (dbType.equals("MYSQL") || dbType.equals("MARIADB")) {
+                isMySQL = true;
+                HikariConfig config = new HikariConfig();
+                String jdbcUrl = String.format(
+                        "jdbc:mysql://%s:%d/%s?useSSL=%b&allowPublicKeyRetrieval=%b",
+                        settings.databaseMySQLAddress,
+                        settings.databaseMySQLPort,
+                        settings.databaseMySQLDBName,
+                        settings.databaseMySQLSSL,
+                        settings.databaseMySQLPublicKeyRetrieval
+                );
+                config.setJdbcUrl(jdbcUrl);
+                config.setUsername(settings.databaseMySQLUsername);
+                config.setPassword(settings.databaseMySQLPassword);
+                config.setPoolName("WildStacker-HikariPool");
+                config.setMaximumPoolSize(4);
+                if (settings.databaseMySQLWaitTimeout > 0) {
+                    config.setConnectionTimeout(settings.databaseMySQLWaitTimeout);
+                }
+                if (settings.databaseMySQLMaxLifetime > 0) {
+                    config.setMaxLifetime(settings.databaseMySQLMaxLifetime);
+                }
+                dataSource = new HikariDataSource(config);
+                try (Connection conn = dataSource.getConnection()) {
+                    return conn != null && !conn.isClosed();
+                }
+            } else {
+                isMySQL = false;
+                if (!plugin.getDataFolder().exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    plugin.getDataFolder().mkdirs();
+                }
+                File dbFile = new File(plugin.getDataFolder(), "database.db");
+                Class.forName("org.sqlite.JDBC");
+                sqliteConnection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+                return sqliteConnection != null && !sqliteConnection.isClosed();
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            return false;
         }
-
-        return false;
     }
 
-    public static CompletableFuture<Void> execute(IDatabaseTransaction transaction) {
-        return globalSession.execute(transaction);
+    private static synchronized Connection acquireConnection() throws SQLException {
+        if (isMySQL) {
+            if (dataSource == null) {
+                throw new SQLException("HikariDataSource is not initialized.");
+            }
+            return dataSource.getConnection();
+        } else {
+            if (sqliteConnection == null || sqliteConnection.isClosed()) {
+                throw new SQLException("SQLite connection is closed.");
+            }
+            return sqliteConnection;
+        }
     }
 
-    public static CompletableFuture<Void> execute(IDatabaseTransaction... transactions) {
-        return globalSession.execute(transactions);
-    }
-
-    public static CompletableFuture<Void> execute(Collection<IDatabaseTransaction> transactions) {
-        return globalSession.execute(transactions);
+    private static void releaseConnection(Connection conn) {
+        if (isMySQL && conn != null) {
+            try {
+                conn.close();
+            } catch (SQLException ignored) {
+            }
+        }
     }
 
     public static void createTable(String tableName, Column... columns) {
-        if (isReady())
-            globalSession.createTable(tableName, columns, QueryResult.EMPTY_VOID_QUERY_RESULT);
+        String columnDefs = Stream.of(columns)
+                .map(col -> col.getName() + " " + normalizeColumnType(col.getType()))
+                .collect(Collectors.joining(", "));
+        String sql = "CREATE TABLE IF NOT EXISTS " + tablePrefix + tableName + " (" + columnDefs + ");";
+
+        Connection conn = null;
+        try {
+            conn = acquireConnection();
+            try (Statement st = conn.createStatement()) {
+                st.executeUpdate(sql);
+            }
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+        } finally {
+            releaseConnection(conn);
+        }
     }
 
-    public static void addColumn(String tableName, String columnName, String type) {
-        if (isReady())
-            globalSession.addColumn(tableName, columnName, type, QueryResult.EMPTY_VOID_QUERY_RESULT);
+    public static void addColumn(String tableName, String columnName, String typeAndDefault) {
+        String fullTableName = tablePrefix + tableName;
+        Connection conn = null;
+        try {
+            conn = acquireConnection();
+            DatabaseMetaData metaData = conn.getMetaData();
+            try (ResultSet rs = metaData.getColumns(null, null, fullTableName, columnName)) {
+                if (rs.next()) {
+                    return;
+                }
+            }
+            String sql = "ALTER TABLE " + fullTableName + " ADD COLUMN " + columnName + " " + normalizeColumnType(typeAndDefault) + ";";
+            try (Statement st = conn.createStatement()) {
+                st.executeUpdate(sql);
+            }
+        } catch (SQLException ignored) {
+        } finally {
+            releaseConnection(conn);
+        }
     }
 
     public static void select(String tableName, String filters, QueryResult<ResultSet> queryResult) {
-        if (isReady())
-            globalSession.select(tableName, filters, queryResult);
+        String sql = "SELECT * FROM " + tablePrefix + tableName + (filters == null || filters.isEmpty() ? "" : " " + filters) + ";";
+        Connection conn = null;
+        try {
+            conn = acquireConnection();
+            try (PreparedStatement ps = conn.prepareStatement(sql);
+                 ResultSet rs = ps.executeQuery()) {
+                queryResult.complete(rs);
+            }
+        } catch (Exception ex) {
+            queryResult.fail(ex);
+        } finally {
+            releaseConnection(conn);
+        }
+    }
+
+    public static void execute(IDatabaseTransaction transaction) {
+        if (transaction != null) {
+            execute(Collections.singletonList(transaction));
+        }
+    }
+
+    public static void execute(Collection<IDatabaseTransaction> transactions) {
+        if (transactions == null || transactions.isEmpty()) {
+            return;
+        }
+        Runnable task = () -> {
+            Connection conn = null;
+            try {
+                conn = acquireConnection();
+                for (IDatabaseTransaction transaction : transactions) {
+                    if (transaction != null) {
+                        transaction.execute(conn, tablePrefix);
+                    }
+                }
+            } catch (SQLException ex) {
+                ex.printStackTrace();
+            } finally {
+                releaseConnection(conn);
+            }
+        };
+
+        if (dbExecutor != null && !dbExecutor.isShutdown()) {
+            dbExecutor.submit(task);
+        } else {
+            task.run();
+        }
     }
 
     public static void close() {
-        if (isReady()) {
-            DatabaseTransactionsExecutor.stopActiveExecutors();
-            globalSession.close();
+        if (dbExecutor != null) {
+            dbExecutor.shutdown();
+            try {
+                dbExecutor.awaitTermination(10, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            dbExecutor = null;
+        }
+        if (dataSource != null) {
+            dataSource.close();
+            dataSource = null;
+        }
+        if (sqliteConnection != null) {
+            try {
+                sqliteConnection.close();
+            } catch (SQLException ignored) {
+            }
+            sqliteConnection = null;
         }
     }
 
-    private static SQLDatabaseSession<?> createSessionInternal(WildStackerPlugin plugin, boolean logging) {
-        IDatabaseSession.Args args;
-        switch (plugin.getSettings().databaseType) {
-            case "MYSQL":
-                args = new MySQLDatabaseSession.Args(plugin.getSettings().databaseMySQLAddress,
-                        plugin.getSettings().databaseMySQLPort, plugin.getSettings().databaseMySQLDBName,
-                        plugin.getSettings().databaseMySQLUsername, plugin.getSettings().databaseMySQLPassword,
-                        plugin.getSettings().databaseMySQLPrefix, plugin.getSettings().databaseMySQLSSL,
-                        plugin.getSettings().databaseMySQLPublicKeyRetrieval,
-                        plugin.getSettings().databaseMySQLWaitTimeout, plugin.getSettings().databaseMySQLMaxLifetime,
-                        "WildStacker Database Thread", LOGGER);
-                break;
-            case "MARIADB":
-                args = new MariaDBDatabaseSession.Args(plugin.getSettings().databaseMySQLAddress,
-                        plugin.getSettings().databaseMySQLPort, plugin.getSettings().databaseMySQLDBName,
-                        plugin.getSettings().databaseMySQLUsername, plugin.getSettings().databaseMySQLPassword,
-                        plugin.getSettings().databaseMySQLPrefix, plugin.getSettings().databaseMySQLSSL,
-                        plugin.getSettings().databaseMySQLPublicKeyRetrieval,
-                        plugin.getSettings().databaseMySQLWaitTimeout, plugin.getSettings().databaseMySQLMaxLifetime,
-                        "WildStacker Database Thread", LOGGER);
-                break;
-            default:
-                File databaseFile = new File(plugin.getDataFolder(), "database.db");
-                args = new SQLiteDatabaseSession.Args(databaseFile,
-                        "WildStacker Database Thread", LOGGER);
-                break;
+    private static String normalizeColumnType(String rawType) {
+        if (rawType == null) {
+            return "TEXT";
         }
-
-        SQLDatabaseSession<?> session = (SQLDatabaseSession<?>) DatabaseSessionFactory.createSession(args);
-        if (logging)
-            session.setLogging(true);
-        return session;
+        return rawType.replace("LONG_UNIQUE_TEXT", "VARCHAR(255)");
     }
 
 }

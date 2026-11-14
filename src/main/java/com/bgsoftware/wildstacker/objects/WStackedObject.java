@@ -84,7 +84,6 @@ public abstract class WStackedObject<T> implements StackedObject<T> {
         return newStackAmount;
     }
 
-    @Override
     public int decreaseStackAmount(int stackAmount, boolean updateName) {
         return increaseStackAmount(-stackAmount, updateName);
     }
@@ -115,18 +114,8 @@ public abstract class WStackedObject<T> implements StackedObject<T> {
     @Override
     public abstract void updateName();
 
-    @Override
-    public boolean canStackInto(StackedObject stackedObject) {
-        new UnsupportedOperationException("canStackInto method is no longer supported.").printStackTrace();
-        return runStackCheck(stackedObject) == StackCheckResult.SUCCESS;
-    }
-
-    @Override
     public StackCheckResult canGetStacked(int amountToAdd) {
-        if (!isWhitelisted())
-            return StackCheckResult.NOT_WHITELISTED;
-
-        if (isBlacklisted())
+        if (!isWhitelisted() || isBlacklisted())
             return StackCheckResult.BLACKLISTED;
 
         if (isWorldDisabled())
@@ -141,7 +130,7 @@ public abstract class WStackedObject<T> implements StackedObject<T> {
     }
 
     @Override
-    public StackCheckResult runStackCheck(StackedObject stackedObject) {
+    public StackCheckResult runStackCheck(StackedObject<?> stackedObject) {
         if (equals(stackedObject) || !isSimilar(stackedObject))
             return StackCheckResult.NOT_SIMILAR;
 
@@ -150,44 +139,34 @@ public abstract class WStackedObject<T> implements StackedObject<T> {
         if (canGetStackedResult != StackCheckResult.SUCCESS)
             return canGetStackedResult;
 
-        StackCheckResult targetCanGetStackedResult = stackedObject.canGetStacked(getStackAmount());
-
-        switch (targetCanGetStackedResult) {
-            case NOT_WHITELISTED:
-                return StackCheckResult.TARGET_NOT_WHITELISTED;
-            case BLACKLISTED:
-                return StackCheckResult.TARGET_BLACKLISTED;
-            case DISABLED_WORLD:
-                return StackCheckResult.TARGET_DISABLED_WORLD;
+        if (stackedObject instanceof WStackedObject<?> targetObject) {
+            return targetObject.canGetStacked(getStackAmount());
         }
 
-        return targetCanGetStackedResult;
+        return StackCheckResult.SUCCESS;
     }
 
-    @Override
-    @Deprecated
     public void runStackAsync(Consumer<Optional<T>> result) {
         Optional<T> stackResult = runStack();
         if (result != null)
             result.accept(stackResult);
     }
 
-    @Override
     public abstract Optional<T> runStack();
 
     @Override
     public T tryStack() {
-        new UnsupportedOperationException("tryStack method is no longer supported.").printStackTrace();
         return runStack().orElse(null);
     }
 
     @Override
-    public abstract StackResult runStack(StackedObject stackedObject);
+    public abstract StackResult runStack(StackedObject<?> stackedObject);
 
     @Override
-    public boolean tryStackInto(StackedObject stackedObject) {
-        new UnsupportedOperationException("tryStackInto method is no longer supported.").printStackTrace();
-        return runStack(stackedObject) == StackResult.SUCCESS;
+    public void runStackAsync(StackedObject<?> stackedObject, Consumer<StackResult> stackResult) {
+        StackResult result = runStack(stackedObject);
+        if (stackResult != null)
+            stackResult.accept(result);
     }
 
     @Override
@@ -199,17 +178,12 @@ public abstract class WStackedObject<T> implements StackedObject<T> {
     public abstract UnstackResult runUnstack(int amount, Entity entity);
 
     @Override
-    public boolean tryUnstack(int amount) {
-        new UnsupportedOperationException("tryUnstack method is no longer supported.").printStackTrace();
-        return runUnstack(amount, null) == UnstackResult.SUCCESS;
-    }
-
-    @Override
-    public abstract boolean isSimilar(StackedObject stackedObject);
+    public abstract boolean isSimilar(StackedObject<?> stackedObject);
 
     @Override
     public abstract void spawnStackParticle(boolean checkEnabled);
 
+    @Override
     public abstract Chunk getChunk();
 
 }

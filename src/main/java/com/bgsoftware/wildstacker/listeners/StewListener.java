@@ -2,7 +2,6 @@ package com.bgsoftware.wildstacker.listeners;
 
 import com.bgsoftware.wildstacker.WildStackerPlugin;
 import com.bgsoftware.wildstacker.utils.items.ItemUtils;
-import com.bgsoftware.wildstacker.utils.legacy.Materials;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.event.EventHandler;
@@ -21,14 +20,16 @@ public final class StewListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onStewEat(PlayerItemConsumeEvent e) {
-        if(!Materials.isSoup(e.getItem()))
+        if (!plugin.getSettings().stewsStackingEnabled || !ItemUtils.isSoup(e.getItem()))
+            return;
+
+        if (e.getItem().getAmount() <= 1)
             return;
 
         ItemStack inHand = e.getItem().clone();
         inHand.setAmount(inHand.getAmount() - 1);
 
         int heldSlot = e.getPlayer().getInventory().getHeldItemSlot();
-
         int consumedItemSlot = e.getItem().equals(e.getPlayer().getInventory().getItem(heldSlot)) ? heldSlot : 40;
 
         Bukkit.getScheduler().runTask(plugin, () -> {
